@@ -48,15 +48,20 @@ class ModelTrainer:
     def optimize_lightgbm_params(self, X_train, y_train):
         """LightGBM 파라미터 최적화"""
         def objective(params):
+            # hp.choice는 인덱스를 반환하므로 실제 값으로 변환
+            num_leaves_choices = [20, 31, 50, 70]
+            bagging_freq_choices = [1, 3, 5]
+            
             lgb_params = {
                 'objective': 'multiclass',
                 'num_class': 3,
                 'metric': 'multi_logloss',
                 'boosting_type': 'gbdt',
-                'num_leaves': int(params['num_leaves']),
+                'num_leaves': num_leaves_choices[int(params['num_leaves'])],
                 'learning_rate': params['learning_rate'],
                 'feature_fraction': params['feature_fraction'],
                 'bagging_fraction': params['bagging_fraction'],
+                'bagging_freq': bagging_freq_choices[int(params['bagging_freq'])],
                 'min_child_weight': params['min_child_weight'],
                 'reg_alpha': params['reg_alpha'],
                 'reg_lambda': params['reg_lambda'],
@@ -64,45 +69,40 @@ class ModelTrainer:
                 'random_state': 42
             }
             
-            # 시간 기반 교차 검증
-            tscv = TimeSeriesSplit(n_splits=3)
-            scores = []
+            # 간단한 홀드아웃 검증
+            X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
+                X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+            )
             
-            for train_idx, val_idx in tscv.split(X_train):
-                X_fold_train = X_train.iloc[train_idx]
-                y_fold_train = y_train.iloc[train_idx]
-                X_fold_val = X_train.iloc[val_idx]
-                y_fold_val = y_train.iloc[val_idx]
-                
-                train_data = lgb.Dataset(X_fold_train, label=y_fold_train)
-                val_data = lgb.Dataset(X_fold_val, label=y_fold_val, reference=train_data)
-                
-                model = lgb.train(
-                    lgb_params,
-                    train_data,
-                    valid_sets=[val_data],
-                    num_boost_round=300,
-                    callbacks=[lgb.early_stopping(30)]
-                )
-                
-                y_pred = model.predict(X_fold_val)
-                loss = log_loss(y_fold_val, y_pred)
-                scores.append(loss)
+            train_data = lgb.Dataset(X_train_split, label=y_train_split)
+            val_data = lgb.Dataset(X_val_split, label=y_val_split, reference=train_data)
             
-            return {'loss': np.mean(scores), 'status': STATUS_OK}
+            model = lgb.train(
+                lgb_params,
+                train_data,
+                valid_sets=[val_data],
+                num_boost_round=200,
+                callbacks=[lgb.early_stopping(20)]
+            )
+            
+            y_pred = model.predict(X_val_split)
+            loss = log_loss(y_val_split, y_pred)
+            
+            return {'loss': loss, 'status': STATUS_OK}
         
         space = {
-            'num_leaves': hp.choice('num_leaves', [20, 31, 50, 70]),
-            'learning_rate': hp.uniform('learning_rate', 0.01, 0.2),
+            'num_leaves': hp.choice('num_leaves', [0, 1, 2, 3]),  # 인덱스로 선택
+            'learning_rate': hp.uniform('learning_rate', 0.02, 0.15),
             'feature_fraction': hp.uniform('feature_fraction', 0.7, 1.0),
             'bagging_fraction': hp.uniform('bagging_fraction', 0.7, 1.0),
-            'min_child_weight': hp.uniform('min_child_weight', 1, 15),
-            'reg_alpha': hp.uniform('reg_alpha', 0, 0.5),
-            'reg_lambda': hp.uniform('reg_lambda', 0, 1.0)
+            'bagging_freq': hp.choice('bagging_freq', [0, 1, 2]),  # 인덱스로 선택
+            'min_child_weight': hp.uniform('min_child_weight', 1, 10),
+            'reg_alpha': hp.uniform('reg_alpha', 0, 0.3),
+            'reg_lambda': hp.uniform('reg_lambda', 0, 0.5)
         }
         
         trials = Trials()
-        best = fmin(fn=objective, space=space, algo=tpe.suggest, max_evals=20, trials=trials)
+        best = fmin(fn=objective, space=space, algo=tpe.suggest, max_evals=15, trials=trials)
         
         self.best_params['lightgbm'] = best
         return best
@@ -193,6 +193,11 @@ class ModelTrainer:
         """CatBoost 모델 학습"""
         print("CatBoost 학습")
         
+        # 클래스 가중치 계산
+        class_counts = np.bincount(y_train)
+        total_samples = len(y_train)
+        class_weights = {i: total_samples / (len(class_counts) * count) for i, count in enumerate(class_counts)}
+        
         model = CatBoostClassifier(
             iterations=1000,
             learning_rate=0.05,
@@ -200,6 +205,7 @@ class ModelTrainer:
             l2_leaf_reg=3,
             bootstrap_type='Bernoulli',
             subsample=0.8,
+            class_weights=list(class_weights.values()),
             random_seed=42,
             verbose=0,
             early_stopping_rounds=50
@@ -272,24 +278,35 @@ class ModelTrainer:
         """신경망 모델 학습"""
         print("Neural Network 학습")
         
+        # 클래스 가중치 계산
+        class_counts = np.bincount(y_train)
+        total_samples = len(y_train)
+        class_weights = {i: total_samples / (len(class_counts) * count) for i, count in enumerate(class_counts)}
+        
+        # 샘플 가중치 생성
+        sample_weights = np.array([class_weights[y] for y in y_train])
+        
         model = MLPClassifier(
-            hidden_layer_sizes=(100, 50),
+            hidden_layer_sizes=(128, 64, 32),
             activation='relu',
             solver='adam',
-            alpha=0.01,
+            alpha=0.001,
             learning_rate='adaptive',
-            max_iter=500,
+            learning_rate_init=0.001,
+            max_iter=1000,
             random_state=42,
             early_stopping=True,
-            validation_fraction=0.1
+            validation_fraction=0.1,
+            n_iter_no_change=20
         )
         
-        model.fit(X_train, y_train)
+        model.fit(X_train, y_train, sample_weight=sample_weights)
         
         y_pred = model.predict(X_val)
         accuracy = accuracy_score(y_val, y_pred)
         
         print(f"Neural Network 검증 정확도: {accuracy:.4f}")
+        print(f"반복 횟수: {model.n_iter_}")
         
         self.models['neural_network'] = model
         return model, accuracy
