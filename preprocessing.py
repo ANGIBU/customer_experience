@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, RobustScaler, QuantileTransformer
 from sklearn.ensemble import IsolationForest
-from sklearn.feature_selection import SelectKBest, mutual_info_classif
+from sklearn.feature_selection import SelectKBest, mutual_info_classif, VarianceThreshold
 from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
 import warnings
@@ -17,6 +17,7 @@ class DataPreprocessor:
         self.feature_selector = None
         self.imputers = {}
         self.selected_features = None
+        self.variance_selector = None
         
     def handle_missing_values(self, train_df, test_df):
         """결측치 처리"""
@@ -57,7 +58,7 @@ class DataPreprocessor:
         
         train_clean = train_df.copy()
         
-        # 수치형 컬럼 선택 (ID와 support_needs 제외)
+        # 수치형 컬럼 선택
         numeric_cols = train_df.select_dtypes(include=[np.number]).columns
         numeric_cols = [col for col in numeric_cols if col not in ['ID', 'support_needs']]
         
@@ -78,6 +79,54 @@ class DataPreprocessor:
                 print(f"  {col}: {outliers_before}개 이상치 클리핑")
         
         return train_clean
+    
+    def remove_constant_features(self, train_df, test_df):
+        """상수 피처 제거"""
+        print("상수 피처 제거")
+        
+        # 분산 기반 상수 피처 탐지
+        numeric_cols = [col for col in train_df.select_dtypes(include=[np.number]).columns 
+                       if col not in ['ID', 'support_needs']]
+        
+        if not numeric_cols:
+            return train_df, test_df
+        
+        self.variance_selector = VarianceThreshold(threshold=0.001)
+        
+        # 훈련 데이터로 학습
+        train_numeric = train_df[numeric_cols].fillna(0)
+        self.variance_selector.fit(train_numeric)
+        
+        # 선택된 피처 확인
+        selected_mask = self.variance_selector.get_support()
+        selected_numeric_cols = [col for i, col in enumerate(numeric_cols) if selected_mask[i]]
+        removed_cols = [col for i, col in enumerate(numeric_cols) if not selected_mask[i]]
+        
+        if removed_cols:
+            print(f"제거된 상수 피처: {len(removed_cols)}개")
+            for col in removed_cols:
+                print(f"  - {col}")
+        
+        # 상수가 아닌 피처만 유지
+        keep_cols_train = ['ID'] + selected_numeric_cols
+        keep_cols_test = ['ID'] + selected_numeric_cols
+        
+        # 범주형 피처 추가
+        categorical_cols = train_df.select_dtypes(include=['object']).columns
+        for col in categorical_cols:
+            if col != 'ID':
+                keep_cols_train.append(col)
+                if col in test_df.columns:
+                    keep_cols_test.append(col)
+        
+        # support_needs 추가
+        if 'support_needs' in train_df.columns:
+            keep_cols_train.append('support_needs')
+        
+        train_clean = train_df[keep_cols_train]
+        test_clean = test_df[keep_cols_test]
+        
+        return train_clean, test_clean
     
     def apply_scaling(self, train_df, test_df):
         """다중 스케일링 적용"""
@@ -196,14 +245,7 @@ class DataPreprocessor:
         if train_null > 0 or test_null > 0:
             issues.append(f"결측치 - 훈련: {train_null}, 테스트: {test_null}")
         
-        # 상수 피처 확인 (훈련 데이터만)
-        constant_features = []
-        for col in train_numeric:
-            if train_df[col].nunique() <= 1:
-                constant_features.append(col)
-        
-        if constant_features:
-            issues.append(f"상수 피처: {len(constant_features)}개")
+        # 상수 피처 확인은 이미 제거했으므로 생략
         
         if issues:
             print("품질 문제:")
@@ -259,14 +301,17 @@ class DataPreprocessor:
         # 2. 이상치 처리 (훈련 데이터만)
         train_df = self.detect_and_handle_outliers(train_df)
         
-        # 3. 피처 상호작용 생성
+        # 3. 상수 피처 제거
+        train_df, test_df = self.remove_constant_features(train_df, test_df)
+        
+        # 4. 피처 상호작용 생성
         train_df = self.create_feature_interactions(train_df)
         test_df = self.create_feature_interactions(test_df)
         
-        # 4. 스케일링
+        # 5. 스케일링
         train_df, test_df = self.apply_scaling(train_df, test_df)
         
-        # 5. 피처 선택 (support_needs가 있는 경우만)
+        # 6. 피처 선택
         if 'support_needs' in train_df.columns:
             selected_features = self.select_best_features(train_df, k=60)
             
@@ -283,7 +328,7 @@ class DataPreprocessor:
             
             print(f"최종 사용 피처: {len(available_features)}개")
         
-        # 6. 품질 검증
+        # 7. 품질 검증
         quality_ok, issues = self.validate_data_quality(train_df, test_df)
         
         print(f"\n전처리 완료:")
@@ -301,7 +346,7 @@ class DataPreprocessor:
         train_cols = set(train_df.columns)
         test_cols = set(test_df.columns)
         
-        # 공통 피처 컬럼 (ID와 support_needs 제외)
+        # 공통 피처 컬럼
         common_features = list((train_cols & test_cols) - {'ID', 'support_needs'})
         
         if not common_features:
@@ -316,7 +361,7 @@ class DataPreprocessor:
         X_test = test_df[common_features]
         test_ids = test_df['ID']
         
-        # 시간 기반 분할 (ID 순서 고려)
+        # 시간 기반 분할
         train_size = int(len(X) * (1 - test_size))
         
         X_train = X.iloc[:train_size]

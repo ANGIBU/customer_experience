@@ -14,7 +14,6 @@ import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostClassifier
 import joblib
-from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
 from feature_engineering import FeatureEngineer
 from preprocessing import DataPreprocessor
 import warnings
@@ -45,87 +44,24 @@ class ModelTrainer:
         
         return X_train, X_val, y_train, y_val, X_test, test_ids, engineer, preprocessor
     
-    def optimize_lightgbm_params(self, X_train, y_train):
-        """LightGBM 파라미터 최적화"""
-        def objective(params):
-            # hp.choice는 인덱스를 반환하므로 실제 값으로 변환
-            num_leaves_choices = [20, 31, 50, 70]
-            bagging_freq_choices = [1, 3, 5]
-            
-            lgb_params = {
-                'objective': 'multiclass',
-                'num_class': 3,
-                'metric': 'multi_logloss',
-                'boosting_type': 'gbdt',
-                'num_leaves': num_leaves_choices[int(params['num_leaves'])],
-                'learning_rate': params['learning_rate'],
-                'feature_fraction': params['feature_fraction'],
-                'bagging_fraction': params['bagging_fraction'],
-                'bagging_freq': bagging_freq_choices[int(params['bagging_freq'])],
-                'min_child_weight': params['min_child_weight'],
-                'reg_alpha': params['reg_alpha'],
-                'reg_lambda': params['reg_lambda'],
-                'verbose': -1,
-                'random_state': 42
-            }
-            
-            # 간단한 홀드아웃 검증
-            X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
-            )
-            
-            train_data = lgb.Dataset(X_train_split, label=y_train_split)
-            val_data = lgb.Dataset(X_val_split, label=y_val_split, reference=train_data)
-            
-            model = lgb.train(
-                lgb_params,
-                train_data,
-                valid_sets=[val_data],
-                num_boost_round=200,
-                callbacks=[lgb.early_stopping(20)]
-            )
-            
-            y_pred = model.predict(X_val_split)
-            loss = log_loss(y_val_split, y_pred)
-            
-            return {'loss': loss, 'status': STATUS_OK}
-        
-        space = {
-            'num_leaves': hp.choice('num_leaves', [0, 1, 2, 3]),  # 인덱스로 선택
-            'learning_rate': hp.uniform('learning_rate', 0.02, 0.15),
-            'feature_fraction': hp.uniform('feature_fraction', 0.7, 1.0),
-            'bagging_fraction': hp.uniform('bagging_fraction', 0.7, 1.0),
-            'bagging_freq': hp.choice('bagging_freq', [0, 1, 2]),  # 인덱스로 선택
-            'min_child_weight': hp.uniform('min_child_weight', 1, 10),
-            'reg_alpha': hp.uniform('reg_alpha', 0, 0.3),
-            'reg_lambda': hp.uniform('reg_lambda', 0, 0.5)
-        }
-        
-        trials = Trials()
-        best = fmin(fn=objective, space=space, algo=tpe.suggest, max_evals=15, trials=trials)
-        
-        self.best_params['lightgbm'] = best
-        return best
-    
     def train_lightgbm(self, X_train, y_train, X_val, y_val):
         """LightGBM 모델 학습"""
         print("LightGBM 학습")
         
-        # 파라미터 최적화
-        best_params = self.optimize_lightgbm_params(X_train, y_train)
-        
+        # 안정적인 파라미터 설정
         lgb_params = {
             'objective': 'multiclass',
             'num_class': 3,
             'metric': 'multi_logloss',
             'boosting_type': 'gbdt',
-            'num_leaves': int(best_params.get('num_leaves', 31)),
-            'learning_rate': best_params.get('learning_rate', 0.05),
-            'feature_fraction': best_params.get('feature_fraction', 0.9),
-            'bagging_fraction': best_params.get('bagging_fraction', 0.8),
-            'min_child_weight': best_params.get('min_child_weight', 5),
-            'reg_alpha': best_params.get('reg_alpha', 0.1),
-            'reg_lambda': best_params.get('reg_lambda', 0.1),
+            'num_leaves': 31,
+            'learning_rate': 0.05,
+            'feature_fraction': 0.9,
+            'bagging_fraction': 0.8,
+            'bagging_freq': 5,
+            'min_child_weight': 5,
+            'reg_alpha': 0.1,
+            'reg_lambda': 0.1,
             'verbose': -1,
             'random_state': 42
         }
@@ -138,7 +74,7 @@ class ModelTrainer:
             train_data,
             valid_sets=[val_data],
             num_boost_round=1000,
-            callbacks=[lgb.early_stopping(50)]
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
         )
         
         y_pred = model.predict(X_val)
@@ -214,7 +150,8 @@ class ModelTrainer:
         model.fit(
             X_train, y_train,
             eval_set=(X_val, y_val),
-            use_best_model=True
+            use_best_model=True,
+            verbose=False
         )
         
         y_pred = model.predict(X_val)
@@ -346,37 +283,42 @@ class ModelTrainer:
             X_val_fold = X.iloc[val_idx]
             y_val_fold = y.iloc[val_idx]
             
-            if model_type == 'lightgbm':
-                lgb_params = {
-                    'objective': 'multiclass',
-                    'num_class': 3,
-                    'metric': 'multi_logloss',
-                    'verbose': -1,
-                    'random_state': 42,
-                    'num_leaves': 31,
-                    'learning_rate': 0.05
-                }
+            try:
+                if model_type == 'lightgbm':
+                    lgb_params = {
+                        'objective': 'multiclass',
+                        'num_class': 3,
+                        'metric': 'multi_logloss',
+                        'verbose': -1,
+                        'random_state': 42,
+                        'num_leaves': 31,
+                        'learning_rate': 0.05
+                    }
+                    
+                    train_data = lgb.Dataset(X_train_fold, label=y_train_fold)
+                    model = lgb.train(lgb_params, train_data, num_boost_round=200)
+                    y_pred = model.predict(X_val_fold)
+                    y_pred_class = np.argmax(y_pred, axis=1)
+                    
+                elif model_type == 'catboost':
+                    model = CatBoostClassifier(
+                        iterations=200,
+                        learning_rate=0.05,
+                        depth=6,
+                        random_seed=42,
+                        verbose=0
+                    )
+                    model.fit(X_train_fold, y_train_fold, verbose=False)
+                    y_pred_class = model.predict(X_val_fold)
                 
-                train_data = lgb.Dataset(X_train_fold, label=y_train_fold)
-                model = lgb.train(lgb_params, train_data, num_boost_round=200)
-                y_pred = model.predict(X_val_fold)
-                y_pred_class = np.argmax(y_pred, axis=1)
+                accuracy = accuracy_score(y_val_fold, y_pred_class)
+                cv_scores.append(accuracy)
                 
-            elif model_type == 'catboost':
-                model = CatBoostClassifier(
-                    iterations=200,
-                    learning_rate=0.05,
-                    depth=6,
-                    random_seed=42,
-                    verbose=0
-                )
-                model.fit(X_train_fold, y_train_fold)
-                y_pred_class = model.predict(X_val_fold)
-            
-            accuracy = accuracy_score(y_val_fold, y_pred_class)
-            cv_scores.append(accuracy)
-            
-            print(f"  Fold {fold + 1}: {accuracy:.4f}")
+                print(f"  Fold {fold + 1}: {accuracy:.4f}")
+                
+            except Exception as e:
+                print(f"  Fold {fold + 1} 오류: {e}")
+                cv_scores.append(0.0)
         
         mean_score = np.mean(cv_scores)
         std_score = np.std(cv_scores)
@@ -397,13 +339,19 @@ class ModelTrainer:
         
         # 기본 모델들의 예측값 수집
         base_models = ['lightgbm', 'xgboost', 'catboost', 'random_forest']
-        base_predictions = np.zeros((X_val.shape[0], len(base_models) * 3))
+        valid_models = [name for name in base_models if name in self.models]
+        
+        if len(valid_models) < 2:
+            print("스태킹을 위한 모델이 부족합니다")
+            return None, 0.0
+        
+        base_predictions = np.zeros((X_val.shape[0], len(valid_models) * 3))
         
         col_idx = 0
-        for model_name in base_models:
-            if model_name in self.models:
-                model = self.models[model_name]
-                
+        for model_name in valid_models:
+            model = self.models[model_name]
+            
+            try:
                 if model_name == 'lightgbm':
                     pred_proba = model.predict(X_val)
                 elif model_name == 'xgboost':
@@ -413,45 +361,55 @@ class ModelTrainer:
                 
                 base_predictions[:, col_idx:col_idx+3] = pred_proba
                 col_idx += 3
+                
+            except Exception as e:
+                print(f"{model_name} 예측 오류: {e}")
+                continue
         
         # 메타 모델 학습
         self.meta_model = RidgeClassifier(alpha=1.0, random_state=42)
         
         # 교차 검증으로 메타 피처 생성
         skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-        meta_features = np.zeros((X_train.shape[0], len(base_models) * 3))
+        meta_features = np.zeros((X_train.shape[0], len(valid_models) * 3))
         
         for train_idx, val_idx in skf.split(X_train, y_train):
             X_fold_train = X_train.iloc[train_idx]
             y_fold_train = y_train.iloc[train_idx]
             X_fold_val = X_train.iloc[val_idx]
             
-            fold_predictions = np.zeros((len(val_idx), len(base_models) * 3))
+            fold_predictions = np.zeros((len(val_idx), len(valid_models) * 3))
             col_idx = 0
             
             # 간단한 모델로 빠른 학습
-            for model_name in base_models:
-                if model_name == 'lightgbm':
-                    lgb_params = {'objective': 'multiclass', 'num_class': 3, 'verbose': -1, 'random_state': 42}
-                    train_data = lgb.Dataset(X_fold_train, label=y_fold_train)
-                    fold_model = lgb.train(lgb_params, train_data, num_boost_round=100)
-                    pred_proba = fold_model.predict(X_fold_val)
+            for model_name in valid_models:
+                try:
+                    if model_name == 'lightgbm':
+                        lgb_params = {'objective': 'multiclass', 'num_class': 3, 'verbose': -1, 'random_state': 42, 'num_leaves': 31}
+                        train_data = lgb.Dataset(X_fold_train, label=y_fold_train)
+                        fold_model = lgb.train(lgb_params, train_data, num_boost_round=100)
+                        pred_proba = fold_model.predict(X_fold_val)
+                        
+                    elif model_name == 'catboost':
+                        fold_model = CatBoostClassifier(iterations=100, random_seed=42, verbose=0)
+                        fold_model.fit(X_fold_train, y_fold_train, verbose=False)
+                        pred_proba = fold_model.predict_proba(X_fold_val)
+                        
+                    elif model_name == 'random_forest':
+                        fold_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+                        fold_model.fit(X_fold_train, y_fold_train)
+                        pred_proba = fold_model.predict_proba(X_fold_val)
+                        
+                    else:
+                        continue
                     
-                elif model_name == 'catboost':
-                    fold_model = CatBoostClassifier(iterations=100, random_seed=42, verbose=0)
-                    fold_model.fit(X_fold_train, y_fold_train)
-                    pred_proba = fold_model.predict_proba(X_fold_val)
+                    fold_predictions[:, col_idx:col_idx+3] = pred_proba
+                    col_idx += 3
                     
-                elif model_name == 'random_forest':
-                    fold_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-                    fold_model.fit(X_fold_train, y_fold_train)
-                    pred_proba = fold_model.predict_proba(X_fold_val)
-                    
-                else:
+                except Exception as e:
+                    print(f"폴드 {model_name} 오류: {e}")
+                    col_idx += 3
                     continue
-                
-                fold_predictions[:, col_idx:col_idx+3] = pred_proba
-                col_idx += 3
             
             meta_features[val_idx] = fold_predictions
         
@@ -505,20 +463,35 @@ class ModelTrainer:
         """모든 모델 저장"""
         print("모델 저장")
         
+        # 디렉토리 확인 및 생성
+        os.makedirs('models', exist_ok=True)
+        
         # 전처리기와 피처 엔지니어 저장
-        joblib.dump(preprocessor, 'models/preprocessor.pkl')
-        joblib.dump(engineer, 'models/feature_engineer.pkl')
+        try:
+            joblib.dump(preprocessor, 'models/preprocessor.pkl')
+            joblib.dump(engineer, 'models/feature_engineer.pkl')
+            print("전처리기 및 피처 엔지니어 저장 완료")
+        except Exception as e:
+            print(f"전처리기 저장 오류: {e}")
         
         # 개별 모델 저장
+        saved_count = 0
         for name, model in self.models.items():
-            if name == 'lightgbm':
-                model.save_model(f'models/{name}_model.txt')
-            elif name == 'xgboost':
-                model.save_model(f'models/{name}_model.json')
-            else:
-                joblib.dump(model, f'models/{name}_model.pkl')
-            
-            print(f"  {name} 모델 저장 완료")
+            try:
+                if name == 'lightgbm':
+                    model.save_model(f'models/{name}_model.txt')
+                elif name == 'xgboost':
+                    model.save_model(f'models/{name}_model.json')
+                else:
+                    joblib.dump(model, f'models/{name}_model.pkl')
+                
+                saved_count += 1
+                print(f"  {name} 모델 저장 완료")
+                
+            except Exception as e:
+                print(f"  {name} 모델 저장 오류: {e}")
+        
+        print(f"총 {saved_count}개 모델 저장 완료")
     
     def train_models(self, X_train, X_val, y_train, y_val):
         """모든 모델 학습"""
@@ -526,24 +499,70 @@ class ModelTrainer:
         print("=" * 40)
         
         # 개별 모델 학습
-        lgb_model, lgb_acc = self.train_lightgbm(X_train, y_train, X_val, y_val)
-        xgb_model, xgb_acc = self.train_xgboost(X_train, y_train, X_val, y_val)
-        cat_model, cat_acc = self.train_catboost(X_train, y_train, X_val, y_val)
-        rf_model, rf_acc = self.train_random_forest(X_train, y_train, X_val, y_val)
-        et_model, et_acc = self.train_extra_trees(X_train, y_train, X_val, y_val)
-        nn_model, nn_acc = self.train_neural_network(X_train, y_train, X_val, y_val)
-        svm_model, svm_acc = self.train_svm(X_train, y_train, X_val, y_val)
+        try:
+            lgb_model, lgb_acc = self.train_lightgbm(X_train, y_train, X_val, y_val)
+        except Exception as e:
+            print(f"LightGBM 학습 실패: {e}")
+            lgb_acc = 0.0
+        
+        try:
+            xgb_model, xgb_acc = self.train_xgboost(X_train, y_train, X_val, y_val)
+        except Exception as e:
+            print(f"XGBoost 학습 실패: {e}")
+            xgb_acc = 0.0
+        
+        try:
+            cat_model, cat_acc = self.train_catboost(X_train, y_train, X_val, y_val)
+        except Exception as e:
+            print(f"CatBoost 학습 실패: {e}")
+            cat_acc = 0.0
+        
+        try:
+            rf_model, rf_acc = self.train_random_forest(X_train, y_train, X_val, y_val)
+        except Exception as e:
+            print(f"Random Forest 학습 실패: {e}")
+            rf_acc = 0.0
+        
+        try:
+            et_model, et_acc = self.train_extra_trees(X_train, y_train, X_val, y_val)
+        except Exception as e:
+            print(f"Extra Trees 학습 실패: {e}")
+            et_acc = 0.0
+        
+        try:
+            nn_model, nn_acc = self.train_neural_network(X_train, y_train, X_val, y_val)
+        except Exception as e:
+            print(f"Neural Network 학습 실패: {e}")
+            nn_acc = 0.0
+        
+        try:
+            svm_model, svm_acc = self.train_svm(X_train, y_train, X_val, y_val)
+        except Exception as e:
+            print(f"SVM 학습 실패: {e}")
+            svm_acc = 0.0
         
         # 앙상블 모델 생성
-        stacking_model, stacking_acc = self.create_stacking_model(X_train, y_train, X_val, y_val)
-        voting_model, voting_acc = self.create_voting_ensemble(X_train, y_train, X_val, y_val)
+        try:
+            stacking_model, stacking_acc = self.create_stacking_model(X_train, y_train, X_val, y_val)
+        except Exception as e:
+            print(f"스태킹 모델 생성 실패: {e}")
+            stacking_acc = 0.0
+        
+        try:
+            voting_model, voting_acc = self.create_voting_ensemble(X_train, y_train, X_val, y_val)
+        except Exception as e:
+            print(f"보팅 앙상블 생성 실패: {e}")
+            voting_acc = 0.0
         
         # 교차 검증
-        full_X = pd.concat([X_train, X_val])
-        full_y = pd.concat([y_train, y_val])
-        
-        self.perform_time_series_cv(full_X, full_y, 'lightgbm')
-        self.perform_time_series_cv(full_X, full_y, 'catboost')
+        if len(self.models) > 0:
+            full_X = pd.concat([X_train, X_val])
+            full_y = pd.concat([y_train, y_val])
+            
+            if 'lightgbm' in self.models:
+                self.perform_time_series_cv(full_X, full_y, 'lightgbm')
+            if 'catboost' in self.models:
+                self.perform_time_series_cv(full_X, full_y, 'catboost')
         
         # 모델 저장
         engineer = FeatureEngineer()
@@ -551,13 +570,20 @@ class ModelTrainer:
         self.save_all_models(engineer, preprocessor)
         
         print("\n모델 성능 요약:")
-        print(f"LightGBM: {lgb_acc:.4f}")
-        print(f"XGBoost: {xgb_acc:.4f}")
-        print(f"CatBoost: {cat_acc:.4f}")
-        print(f"Random Forest: {rf_acc:.4f}")
-        print(f"Extra Trees: {et_acc:.4f}")
-        print(f"Neural Network: {nn_acc:.4f}")
-        print(f"SVM: {svm_acc:.4f}")
+        if lgb_acc > 0:
+            print(f"LightGBM: {lgb_acc:.4f}")
+        if xgb_acc > 0:
+            print(f"XGBoost: {xgb_acc:.4f}")
+        if cat_acc > 0:
+            print(f"CatBoost: {cat_acc:.4f}")
+        if rf_acc > 0:
+            print(f"Random Forest: {rf_acc:.4f}")
+        if et_acc > 0:
+            print(f"Extra Trees: {et_acc:.4f}")
+        if nn_acc > 0:
+            print(f"Neural Network: {nn_acc:.4f}")
+        if svm_acc > 0:
+            print(f"SVM: {svm_acc:.4f}")
         if stacking_acc > 0:
             print(f"Stacking: {stacking_acc:.4f}")
         if voting_acc > 0:

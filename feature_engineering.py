@@ -105,39 +105,6 @@ class FeatureEngineer:
             df_new[f'{feat}_sqrt'] = np.sqrt(abs(df_new[feat]))
         
         return df_new
-        """고객 행동 패턴 피처 생성"""
-        df_new = df.copy()
-        
-        # 고객 가치 점수
-        if all(col in df.columns for col in ['frequent', 'tenure', 'contract_length']):
-            df_new['customer_value_score'] = (
-                df_new['frequent'] * 0.4 + 
-                df_new['tenure'] * 0.3 + 
-                df_new['contract_length'] * 0.3
-            ) / 3
-        
-        # 서비스 사용 패턴
-        if 'frequent' in df.columns and 'tenure' in df.columns:
-            df_new['usage_intensity'] = df_new['frequent'] / (df_new['tenure'] + 1)
-            df_new['usage_stability'] = np.where(df_new['tenure'] > 0, 
-                                               df_new['frequent'] / df_new['tenure'], 0)
-        
-        # 계약 충성도
-        if 'contract_length' in df.columns and 'payment_interval' in df.columns:
-            df_new['contract_loyalty'] = df_new['contract_length'] / (df_new['payment_interval'] + 1)
-        
-        # 연령대별 행동 패턴
-        if 'age' in df.columns and 'frequent' in df.columns:
-            # 연령 정규화 (0-1)
-            age_normalized = (df_new['age'] - df_new['age'].min()) / (df_new['age'].max() - df_new['age'].min())
-            df_new['age_usage_pattern'] = age_normalized * df_new['frequent']
-        
-        # 상호작용 품질 지표
-        if all(col in df.columns for col in ['after_interaction', 'frequent', 'tenure']):
-            df_new['interaction_quality'] = df_new['after_interaction'] / (df_new['frequent'] + df_new['tenure'] + 1)
-            df_new['interaction_per_month'] = df_new['after_interaction'] / ((df_new['tenure'] / 30) + 1)
-        
-        return df_new
     
     def create_target_encoding(self, train_df, test_df):
         """타겟 인코딩 생성"""
@@ -272,7 +239,6 @@ class FeatureEngineer:
     
     def remove_leakage_features(self, train_df, test_df):
         """누수 위험 피처 변환"""
-        # after_interaction을 완전 제거하지 않고 변환하여 사용
         train_new = train_df.copy()
         test_new = test_df.copy()
         
@@ -289,7 +255,6 @@ class FeatureEngineer:
                                                   bins=[0, 10, 25, 50, 1000],
                                                   labels=[0, 1, 2, 3]).astype(int)
             
-            # 원본 after_interaction는 유지 (시간적 누수 있지만 성능 향상 위해)
             print("after_interaction 피처 변환 완료")
         
         return train_new, test_new
@@ -301,7 +266,7 @@ class FeatureEngineer:
         
         original_features = train_df.shape[1]
         
-        # 1. 누수 위험 피처 변환 (제거하지 않고 변환)
+        # 1. 누수 위험 피처 변환
         train_df, test_df = self.remove_leakage_features(train_df, test_df)
         
         # 2. 기본 피처 생성

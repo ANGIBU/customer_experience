@@ -27,9 +27,21 @@ class PredictionSystem:
         
         try:
             # 전처리기 및 피처 엔지니어 로드
-            self.preprocessor = joblib.load('models/preprocessor.pkl')
-            self.feature_engineer = joblib.load('models/feature_engineer.pkl')
-            print("전처리기 로드 완료")
+            if os.path.exists('models/preprocessor.pkl'):
+                self.preprocessor = joblib.load('models/preprocessor.pkl')
+                print("전처리기 로드 완료")
+            else:
+                print("전처리기 파일 없음 - 새로 생성")
+                from preprocessing import DataPreprocessor
+                self.preprocessor = DataPreprocessor()
+            
+            if os.path.exists('models/feature_engineer.pkl'):
+                self.feature_engineer = joblib.load('models/feature_engineer.pkl')
+                print("피처 엔지니어 로드 완료")
+            else:
+                print("피처 엔지니어 파일 없음 - 새로 생성")
+                from feature_engineering import FeatureEngineer
+                self.feature_engineer = FeatureEngineer()
             
             # 모델 파일 목록
             model_files = [
@@ -61,12 +73,41 @@ class PredictionSystem:
                         print(f"  {name} 로드 완료")
                     except Exception as e:
                         print(f"  {name} 로드 실패: {e}")
+                else:
+                    print(f"  {name} 파일 없음: {filepath}")
+            
+            if loaded_count == 0:
+                print("모델 파일이 없어 새로 학습합니다")
+                return self.train_models_if_missing()
             
             print(f"총 {loaded_count}개 모델 로드 완료")
-            return loaded_count > 0
+            return True
             
         except Exception as e:
             print(f"모델 로드 오류: {e}")
+            return self.train_models_if_missing()
+    
+    def train_models_if_missing(self):
+        """모델이 없을 경우 새로 학습"""
+        print("모델 없음 - 새로 학습 시작")
+        
+        try:
+            from model_training import ModelTrainer
+            
+            trainer = ModelTrainer()
+            X_train, X_val, y_train, y_val, X_test, test_ids, engineer, preprocessor = trainer.prepare_training_data()
+            trainer.train_models(X_train, X_val, y_train, y_val)
+            
+            # 학습된 모델들 복사
+            self.models = trainer.models.copy()
+            self.feature_engineer = engineer
+            self.preprocessor = preprocessor
+            
+            print("새 모델 학습 완료")
+            return len(self.models) > 0
+            
+        except Exception as e:
+            print(f"새 모델 학습 실패: {e}")
             return False
     
     def prepare_test_data(self):
@@ -107,9 +148,9 @@ class PredictionSystem:
                     if pred_proba.ndim == 1:
                         # 이진 분류 결과를 다중 분류로 변환
                         pred_proba_multi = np.zeros((len(pred_proba), 3))
-                        pred_proba_multi[:, 1] = pred_proba  # 클래스 1 확률
-                        pred_proba_multi[:, 0] = 1 - pred_proba  # 클래스 0 확률
-                        pred_proba_multi[:, 2] = 0  # 클래스 2 확률
+                        pred_proba_multi[:, 1] = pred_proba
+                        pred_proba_multi[:, 0] = 1 - pred_proba
+                        pred_proba_multi[:, 2] = 0
                         pred_proba = pred_proba_multi
                     predictions[name] = pred_proba
                     
@@ -143,13 +184,13 @@ class PredictionSystem:
         
         # 성능 기반 재조정된 가중치
         weights = {
-            'lightgbm': 0.35,      # 부스팅 계열 강화
+            'lightgbm': 0.35,
             'xgboost': 0.30,
             'catboost': 0.25,
-            'random_forest': 0.10,  # 트리 계열 축소
-            'extra_trees': 0.00,    # 제외
-            'neural_network': 0.00, # 제외
-            'stacking': 0.00        # 제외
+            'random_forest': 0.10,
+            'extra_trees': 0.00,
+            'neural_network': 0.00,
+            'stacking': 0.00
         }
         
         # 사용 가능한 모델의 가중치 정규화
@@ -165,6 +206,10 @@ class PredictionSystem:
         if total_weight > 0:
             for name in available_weights:
                 available_weights[name] /= total_weight
+        else:
+            # 모든 모델에 동일 가중치
+            for name in predictions.keys():
+                available_weights[name] = 1.0 / len(predictions)
         
         print("모델별 가중치:")
         for name, weight in available_weights.items():
@@ -259,20 +304,17 @@ class PredictionSystem:
             if current_count > 0:
                 ratio = target_count / current_count
                 
-                if ratio < 0.8:  # 과다 예측
+                if ratio < 0.8:
                     cls_mask = pred_classes == cls
-                    # 확률 크게 감소
                     adjusted_proba[cls_mask, cls] *= 0.7
                     
-                elif ratio > 1.2:  # 과소 예측
+                elif ratio > 1.2:
                     cls_mask = pred_classes == cls
-                    # 확률 크게 증가
                     adjusted_proba[cls_mask, cls] *= 1.4
                     
                     # 다른 클래스에서 확률 이동
                     for other_cls in range(3):
                         if other_cls != cls:
-                            # 상위 확률 샘플에서 클래스 변경
                             top_candidates = pred_proba[:, cls] > np.percentile(pred_proba[:, cls], 85)
                             change_mask = top_candidates & (pred_classes != cls)
                             
@@ -359,6 +401,44 @@ class PredictionSystem:
         print("제출 파일 검증 통과")
         return True
     
+    def create_fallback_predictions(self, X_test, test_ids):
+        """대체 예측 생성"""
+        print("대체 예측 생성")
+        
+        # 간단한 모델로 예측
+        from sklearn.ensemble import RandomForestClassifier
+        
+        # 훈련 데이터 다시 로드 및 처리
+        train_df = pd.read_csv('train.csv')
+        test_df = pd.read_csv('test.csv')
+        
+        train_processed, test_processed = self.feature_engineer.create_features(train_df, test_df)
+        train_final, test_final = self.preprocessor.process_data(train_processed, test_processed)
+        
+        # 공통 피처 확인
+        feature_cols = [col for col in train_final.columns 
+                       if col not in ['ID', 'support_needs'] and col in test_final.columns]
+        
+        X_train = train_final[feature_cols]
+        y_train = train_final['support_needs']
+        X_test_final = test_final[feature_cols]
+        
+        # 간단한 RandomForest 학습
+        model = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=10,
+            class_weight='balanced',
+            random_state=42,
+            n_jobs=-1
+        )
+        
+        model.fit(X_train, y_train)
+        predictions = model.predict(X_test_final)
+        
+        print("대체 예측 완료")
+        
+        return predictions
+    
     def generate_predictions(self):
         """전체 예측 파이프라인"""
         print("예측 시스템 시작")
@@ -366,24 +446,31 @@ class PredictionSystem:
         
         # 1. 모델 로드
         if not self.load_trained_models():
-            print("모델 로드 실패")
-            return None
-        
+            print("모델 로드 완료 실패")
+            
         # 2. 테스트 데이터 준비
-        X_test, test_ids = self.prepare_test_data()
+        try:
+            X_test, test_ids = self.prepare_test_data()
+        except Exception as e:
+            print(f"테스트 데이터 준비 오류: {e}")
+            return None
         
         # 3. 개별 모델 예측
-        individual_predictions = self.predict_individual_models(X_test)
-        
-        if not individual_predictions:
-            print("예측 실패")
-            return None
-        
-        # 4. 앙상블 예측
-        ensemble_proba = self.ensemble_predictions(individual_predictions)
-        
-        # 5. 후처리
-        final_predictions, final_proba = self.post_process_predictions(ensemble_proba)
+        if self.models:
+            individual_predictions = self.predict_individual_models(X_test)
+            
+            if individual_predictions:
+                # 4. 앙상블 예측
+                ensemble_proba = self.ensemble_predictions(individual_predictions)
+                
+                # 5. 후처리
+                final_predictions, final_proba = self.post_process_predictions(ensemble_proba)
+            else:
+                print("개별 모델 예측 실패 - 대체 방법 사용")
+                final_predictions = self.create_fallback_predictions(X_test, test_ids)
+        else:
+            print("사용 가능한 모델 없음 - 대체 방법 사용")
+            final_predictions = self.create_fallback_predictions(X_test, test_ids)
         
         # 6. 제출 파일 생성
         submission_df = self.create_submission(test_ids, final_predictions)
@@ -425,33 +512,6 @@ class PredictionSystem:
             'low_confidence': low_conf,
             'mean_confidence': mean_confidence
         }
-    
-    def generate_prediction_report(self, submission_df, confidence_analysis):
-        """예측 보고서 생성"""
-        print("\n예측 성과 보고서")
-        print("=" * 40)
-        
-        # 기본 정보
-        print(f"총 예측 샘플: {len(submission_df):,}개")
-        print(f"평균 신뢰도: {confidence_analysis['mean_confidence']:.3f}")
-        
-        # 클래스별 분포
-        class_dist = submission_df['support_needs'].value_counts().sort_index()
-        print("\n클래스별 예측 분포:")
-        for cls, count in class_dist.items():
-            pct = count / len(submission_df) * 100
-            print(f"  클래스 {cls}: {count:,}개 ({pct:.1f}%)")
-        
-        # 신뢰도별 분포
-        print(f"\n신뢰도별 분포:")
-        print(f"  높은 신뢰도: {confidence_analysis['high_confidence']:,}개")
-        print(f"  보통 신뢰도: {confidence_analysis['medium_confidence']:,}개")
-        print(f"  낮은 신뢰도: {confidence_analysis['low_confidence']:,}개")
-        
-        # 모델 정보
-        print(f"\n사용된 모델: {len(self.models)}개")
-        for name in self.models.keys():
-            print(f"  - {name}")
 
 def main():
     predictor = PredictionSystem()
