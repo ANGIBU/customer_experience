@@ -41,7 +41,6 @@ class DataAnalyzer:
             pct = count / total * 100
             print(f"  클래스 {cls}: {count:,}개 ({pct:.2f}%)")
         
-        # 불균형 정도 계산
         imbalance_ratio = target_counts.max() / target_counts.min()
         print(f"불균형 비율: {imbalance_ratio:.2f}")
         
@@ -83,7 +82,6 @@ class DataAnalyzer:
         """피처 중요도 분석"""
         print("\n=== 피처 중요도 분석 ===")
         
-        # 범주형 변수 인코딩
         train_encoded = self.train_df.copy()
         le = LabelEncoder()
         
@@ -91,7 +89,6 @@ class DataAnalyzer:
         for col in categorical_cols:
             train_encoded[col] = le.fit_transform(train_encoded[col])
         
-        # 상호정보량 계산
         feature_cols = [col for col in train_encoded.columns if col not in ['ID', 'support_needs']]
         X = train_encoded[feature_cols]
         y = train_encoded['support_needs']
@@ -111,19 +108,16 @@ class DataAnalyzer:
         """고급 상관관계 분석"""
         print("\n=== 고급 상관관계 분석 ===")
         
-        # 수치형 변수만 선택
         numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 
                        'contract_length', 'after_interaction', 'support_needs']
         
         corr_matrix = self.train_df[numeric_cols].corr()
         
-        # 타겟과의 강한 상관관계
         target_corr = corr_matrix['support_needs'].abs().sort_values(ascending=False)
         print("타겟과의 상관관계 (절댓값):")
         for feature, corr in target_corr[:-1].items():
             print(f"  {feature}: {corr:.4f}")
         
-        # 피처 간 다중공선성 확인
         high_corr_pairs = []
         for i in range(len(corr_matrix.columns)):
             for j in range(i+1, len(corr_matrix.columns)):
@@ -152,7 +146,6 @@ class DataAnalyzer:
         
         quality_report = {}
         
-        # 결측치 분석
         missing_train = self.train_df.isnull().sum()
         missing_test = self.test_df.isnull().sum()
         
@@ -160,13 +153,11 @@ class DataAnalyzer:
         print("  훈련 데이터:", missing_train[missing_train > 0].to_dict() if missing_train.sum() > 0 else "없음")
         print("  테스트 데이터:", missing_test[missing_test > 0].to_dict() if missing_test.sum() > 0 else "없음")
         
-        # 중복값 분석
         train_duplicates = self.train_df.duplicated().sum()
         test_duplicates = self.test_df.duplicated().sum()
         
         print(f"중복 행: 훈련 {train_duplicates}개, 테스트 {test_duplicates}개")
         
-        # 이상치 분석
         numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 
                        'contract_length', 'after_interaction']
         
@@ -223,7 +214,6 @@ class DataAnalyzer:
             print(f"  평균 변화: {mean_shift:.2f}%")
             print(f"  표준편차 변화: {std_shift:.2f}%")
         
-        # 범주형 변수 분포 비교
         categorical_cols = ['gender', 'subscription_type']
         for col in categorical_cols:
             train_dist = self.train_df[col].value_counts(normalize=True)
@@ -243,31 +233,26 @@ class DataAnalyzer:
         """데이터 누수 탐지"""
         print("\n=== 데이터 누수 탐지 ===")
         
-        # ID 패턴 분석
         train_ids = self.train_df['ID'].tolist()
         test_ids = self.test_df['ID'].tolist()
         
-        # ID 중복 확인
         common_ids = set(train_ids) & set(test_ids)
         if common_ids:
             print(f"경고: 훈련-테스트 간 공통 ID {len(common_ids)}개 발견!")
         else:
             print("ID 중복: 없음")
         
-        # 시간 순서 패턴 분석
         train_id_numbers = [int(id.split('_')[1]) for id in train_ids]
         test_id_numbers = [int(id.split('_')[1]) for id in test_ids]
         
         print(f"훈련 ID 범위: {min(train_id_numbers)} - {max(train_id_numbers)}")
         print(f"테스트 ID 범위: {min(test_id_numbers)} - {max(test_id_numbers)}")
         
-        # 중복 행 패턴 검사
         common_features = [col for col in self.train_df.columns if col in self.test_df.columns and col != 'ID']
         
         train_features = self.train_df[common_features]
         test_features = self.test_df[common_features]
         
-        # 동일한 피처 조합 확인
         train_hash = pd.util.hash_pandas_object(train_features, index=False)
         test_hash = pd.util.hash_pandas_object(test_features, index=False)
         
@@ -285,29 +270,24 @@ class DataAnalyzer:
         print("종합 데이터 분석 보고서")
         print("="*60)
         
-        # 핵심 발견사항
         print("\n핵심 발견사항:")
         
-        # 타겟 불균형
         imbalance = self.analysis_results.get('target_distribution', {}).get('imbalance_ratio', 0)
         if imbalance > 2:
             print(f"- 심각한 클래스 불균형: {imbalance:.2f}")
         
-        # 분포 변화
         shifts = self.analysis_results.get('distribution_shifts', {})
         high_shift_features = [feat for feat, info in shifts.items() 
                               if info.get('mean_shift_pct', 0) > 5]
         if high_shift_features:
             print(f"- 분포 변화 피처: {high_shift_features}")
         
-        # 데이터 품질 이슈
         outliers = self.analysis_results.get('data_quality', {}).get('outliers', {})
         high_outlier_features = [feat for feat, count in outliers.items() 
                                 if count > len(self.train_df) * 0.05]
         if high_outlier_features:
             print(f"- 이상치 많은 피처: {high_outlier_features}")
         
-        # 권장사항
         print("\n권장사항:")
         print("- 고급 피처 엔지니어링 (다항식, 타겟인코딩) 필수")
         print("- 강력한 교차검증 전략 필요")
@@ -320,10 +300,8 @@ class DataAnalyzer:
         print("고급 데이터 분석 시작")
         print("="*50)
         
-        # 데이터 로드
         self.load_data()
         
-        # 모든 분석 수행
         self.analyze_target_distribution()
         self.analyze_feature_distributions()
         self.analyze_feature_importance()
@@ -332,14 +310,13 @@ class DataAnalyzer:
         self.analyze_train_test_distribution()
         self.detect_potential_leakage()
         
-        # 종합 보고서
         self.generate_comprehensive_report()
         
         return self.analysis_results
 
 def main():
     """메인 실행 함수"""
-    analyzer = AdvancedDataAnalyzer()
+    analyzer = DataAnalyzer()
     results = analyzer.run_complete_analysis()
     return analyzer, results
 
