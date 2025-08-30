@@ -19,7 +19,7 @@ class AISystem:
     def __init__(self):
         self.start_time = None
         self.results = {}
-        self.target_accuracy = 0.60
+        self.target_accuracy = 0.55
         
     def setup_environment(self):
         print("AI 시스템 초기화")

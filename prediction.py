@@ -141,13 +141,15 @@ class PredictionSystem:
         """앙상블 예측 생성"""
         print("앙상블 예측 생성")
         
-        # 모델별 가중치 (성능 기반)
+        # 성능 기반 재조정된 가중치
         weights = {
-            'lightgbm': 0.30,
-            'xgboost': 0.25,
-            'catboost': 0.20,
-            'random_forest': 0.15,
-            'extra_trees': 0.10
+            'lightgbm': 0.35,      # 부스팅 계열 강화
+            'xgboost': 0.30,
+            'catboost': 0.25,
+            'random_forest': 0.10,  # 트리 계열 축소
+            'extra_trees': 0.00,    # 제외
+            'neural_network': 0.00, # 제외
+            'stacking': 0.00        # 제외
         }
         
         # 사용 가능한 모델의 가중치 정규화
@@ -155,7 +157,7 @@ class PredictionSystem:
         total_weight = 0
         
         for name in predictions.keys():
-            if name in weights:
+            if name in weights and weights[name] > 0:
                 available_weights[name] = weights[name]
                 total_weight += weights[name]
         
@@ -183,20 +185,26 @@ class PredictionSystem:
         
         optimized_proba = pred_proba.copy()
         
-        # 각 클래스별 임계값 조정
+        # 각 클래스별 강화된 임계값 조정
         for cls in range(3):
             class_proba = optimized_proba[:, cls]
             
-            # 분위수 기반 조정
-            q25 = np.percentile(class_proba, 25)
+            # 분위수 기반 강화 조정
+            q90 = np.percentile(class_proba, 90)
             q75 = np.percentile(class_proba, 75)
+            q25 = np.percentile(class_proba, 25)
+            q10 = np.percentile(class_proba, 10)
             
-            # 높은 확률은 더 높게, 낮은 확률은 더 낮게
-            high_conf_mask = class_proba > q75
-            low_conf_mask = class_proba < q25
+            # 매우 높은 확률은 더 강화
+            very_high_mask = class_proba > q90
+            high_mask = (class_proba > q75) & (class_proba <= q90)
+            low_mask = (class_proba >= q10) & (class_proba < q25)
+            very_low_mask = class_proba < q10
             
-            optimized_proba[high_conf_mask, cls] *= 1.05
-            optimized_proba[low_conf_mask, cls] *= 0.95
+            optimized_proba[very_high_mask, cls] *= 1.15
+            optimized_proba[high_mask, cls] *= 1.08
+            optimized_proba[low_mask, cls] *= 0.92
+            optimized_proba[very_low_mask, cls] *= 0.85
         
         # 확률 정규화
         row_sums = optimized_proba.sum(axis=1, keepdims=True)
@@ -231,8 +239,8 @@ class PredictionSystem:
         current_dist = np.bincount(pred_classes, minlength=3)
         total_samples = len(pred_classes)
         
-        # 목표 분포 (훈련 데이터 기반 추정)
-        target_distribution = np.array([0.45, 0.30, 0.25])
+        # 훈련 데이터 실제 분포 기반 목표 설정
+        target_distribution = np.array([0.463, 0.269, 0.268])
         target_counts = (target_distribution * total_samples).astype(int)
         
         print("분포 조정:")
@@ -241,7 +249,7 @@ class PredictionSystem:
             target_pct = target_distribution[cls] * 100
             print(f"  클래스 {cls}: {current_pct:.1f}% → {target_pct:.1f}%")
         
-        # 확률 조정
+        # 확률 강화 조정
         adjusted_proba = pred_proba.copy()
         
         for cls in range(3):
@@ -249,17 +257,28 @@ class PredictionSystem:
             target_count = target_counts[cls]
             
             if current_count > 0:
-                if current_count > target_count:
-                    # 과다 예측된 클래스 확률 감소
+                ratio = target_count / current_count
+                
+                if ratio < 0.8:  # 과다 예측
                     cls_mask = pred_classes == cls
-                    adjustment = 0.9
-                    adjusted_proba[cls_mask, cls] *= adjustment
+                    # 확률 크게 감소
+                    adjusted_proba[cls_mask, cls] *= 0.7
                     
-                elif current_count < target_count:
-                    # 과소 예측된 클래스 확률 증가
+                elif ratio > 1.2:  # 과소 예측
                     cls_mask = pred_classes == cls
-                    adjustment = 1.1
-                    adjusted_proba[cls_mask, cls] *= adjustment
+                    # 확률 크게 증가
+                    adjusted_proba[cls_mask, cls] *= 1.4
+                    
+                    # 다른 클래스에서 확률 이동
+                    for other_cls in range(3):
+                        if other_cls != cls:
+                            # 상위 확률 샘플에서 클래스 변경
+                            top_candidates = pred_proba[:, cls] > np.percentile(pred_proba[:, cls], 85)
+                            change_mask = top_candidates & (pred_classes != cls)
+                            
+                            if change_mask.sum() > 0:
+                                adjusted_proba[change_mask, cls] *= 1.3
+                                adjusted_proba[change_mask, other_cls] *= 0.8
         
         # 재정규화
         row_sums = adjusted_proba.sum(axis=1, keepdims=True)
