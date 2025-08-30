@@ -15,7 +15,8 @@ class FeatureEngineer:
         self.target_encoders = {}
         self.kmeans_model = None
         self.pca_model = None
-        self.feature_names_order = None  # 피처 순서 저장
+        self.feature_names_order = None
+        self.is_fitted = False
         
     def create_basic_features(self, df):
         """기본 피처 생성"""
@@ -65,7 +66,7 @@ class FeatureEngineer:
         if 'contract_length' in df.columns and 'payment_interval' in df.columns:
             df_new['contract_loyalty'] = df_new['contract_length'] / (df_new['payment_interval'] + 1)
         
-        # 연령대별 행동 패턴 수정 - 정규화 안전성 개선
+        # 연령대별 행동 패턴 개선
         if 'age' in df.columns and 'frequent' in df.columns:
             age_min = df_new['age'].min()
             age_max = df_new['age'].max()
@@ -85,10 +86,6 @@ class FeatureEngineer:
     def create_interaction_features(self, df):
         """상호작용 피처 생성"""
         df_new = df.copy()
-        
-        # 핵심 수치 피처
-        base_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
-        available_features = [feat for feat in base_features if feat in df.columns]
         
         # 미리 정의된 상호작용 쌍 (순서 보장)
         interaction_pairs = [
@@ -289,40 +286,36 @@ class FeatureEngineer:
         if 'support_needs' in train_df.columns:
             base_cols.append('support_needs')
         
-        # 공통 컬럼 찾기
-        train_cols = set(train_df.columns)
-        test_cols = set(test_df.columns)
-        common_cols = train_cols & test_cols
-        
-        # 누락된 피처를 0으로 채우기
-        for col in train_cols - common_cols:
-            if col not in base_cols and col != 'support_needs':
-                test_df[col] = 0
-                print(f"테스트 데이터에 {col} 피처 추가 (0으로 채움)")
-        
-        for col in test_cols - common_cols:
-            if col not in base_cols:
-                train_df[col] = 0
-                print(f"훈련 데이터에 {col} 피처 추가 (0으로 채움)")
-        
-        # 컬럼 순서 통일 (처음 생성시에만)
-        if self.feature_names_order is None:
+        # 피처 순서 결정 (첫 번째 실행시에만)
+        if self.feature_names_order is None and not self.is_fitted:
             feature_cols = [col for col in train_df.columns 
                            if col not in ['ID', 'support_needs']]
             self.feature_names_order = sorted(feature_cols)
+            self.is_fitted = True
         
-        # 순서대로 정렬
-        train_ordered_cols = ['ID'] + self.feature_names_order
-        if 'support_needs' in train_df.columns:
-            train_ordered_cols.append('support_needs')
+        # 피처 순서가 있으면 일관성 보장
+        if self.feature_names_order is not None:
+            # 누락된 피처를 0으로 추가
+            for col in self.feature_names_order:
+                if col not in train_df.columns:
+                    train_df[col] = 0
+                if col not in test_df.columns:
+                    test_df[col] = 0
+            
+            # 순서대로 정렬
+            train_ordered_cols = ['ID'] + self.feature_names_order
+            if 'support_needs' in train_df.columns:
+                train_ordered_cols.append('support_needs')
+            
+            test_ordered_cols = ['ID'] + self.feature_names_order
+            
+            # 존재하는 컬럼만 필터링
+            train_ordered_cols = [col for col in train_ordered_cols if col in train_df.columns]
+            test_ordered_cols = [col for col in test_ordered_cols if col in test_df.columns]
+            
+            return train_df[train_ordered_cols], test_df[test_ordered_cols]
         
-        test_ordered_cols = ['ID'] + self.feature_names_order
-        
-        # 존재하는 컬럼만 필터링
-        train_ordered_cols = [col for col in train_ordered_cols if col in train_df.columns]
-        test_ordered_cols = [col for col in test_ordered_cols if col in test_df.columns]
-        
-        return train_df[train_ordered_cols], test_df[test_ordered_cols]
+        return train_df, test_df
     
     def create_features(self, train_df, test_df):
         """전체 피처 생성 파이프라인"""
@@ -362,7 +355,7 @@ class FeatureEngineer:
         # 9. 범주형 인코딩
         train_df, test_df = self.encode_categorical(train_df, test_df)
         
-        # 10. 피처 일관성 보장
+        # 10. 피처 일관성 보장 (마지막에 수행)
         train_df, test_df = self.ensure_feature_consistency(train_df, test_df)
         
         final_features = train_df.shape[1]

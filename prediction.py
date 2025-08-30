@@ -19,8 +19,9 @@ class PredictionSystem:
     def __init__(self):
         self.models = {}
         self.feature_engineer = None
-        # 추가 초기화
+        self.preprocessor = None
         self.feature_info = None
+        self.feature_names = None
         
     def load_trained_models(self):
         """학습된 모델 로드"""
@@ -45,9 +46,9 @@ class PredictionSystem:
                 self.feature_engineer = FeatureEngineer()
             
             # 피처 정보 로드
-            self.feature_info = None
             if os.path.exists('models/feature_info.pkl'):
                 self.feature_info = joblib.load('models/feature_info.pkl')
+                self.feature_names = self.feature_info['feature_names']
                 print(f"피처 정보 로드: {self.feature_info['feature_count']}개")
             
             # 모델 파일 목록
@@ -105,10 +106,10 @@ class PredictionSystem:
             X_train, X_val, y_train, y_val, X_test, test_ids, engineer, preprocessor = trainer.prepare_training_data()
             trainer.train_models(X_train, X_val, y_train, y_val)
             
-            # 학습된 모델들 복사
             self.models = trainer.models.copy()
             self.feature_engineer = engineer
             self.preprocessor = preprocessor
+            self.feature_names = trainer.feature_names
             
             print("새 모델 학습 완료")
             return len(self.models) > 0
@@ -131,29 +132,45 @@ class PredictionSystem:
         # 전처리 적용
         train_final, test_final = self.preprocessor.process_data(train_processed, test_processed)
         
-        # 저장된 피처 정보 사용
-        if self.feature_info and 'feature_names' in self.feature_info:
-            expected_features = self.feature_info['feature_names']
-            print(f"저장된 피처 정보 사용: {len(expected_features)}개")
+        # 피처 일관성 보장
+        if self.feature_names is not None:
+            print(f"저장된 피처 순서 사용: {len(self.feature_names)}개")
             
             # 누락된 피처를 0으로 채우기
-            for feature in expected_features:
+            for feature in self.feature_names:
                 if feature not in test_final.columns:
                     test_final[feature] = 0
                     print(f"누락 피처 추가: {feature}")
             
-            # 예상 피처만 선택하고 순서 맞추기
-            available_features = [f for f in expected_features if f in test_final.columns]
-            X_test = test_final[available_features]
+            # 정확한 순서로 피처 선택
+            available_features = [f for f in self.feature_names if f in test_final.columns]
+            
+            # 누락된 피처가 있으면 경고
+            missing_features = set(self.feature_names) - set(available_features)
+            if missing_features:
+                print(f"경고: {len(missing_features)}개 피처 누락")
+                for feat in list(missing_features)[:5]:
+                    print(f"  - {feat}")
+            
+            X_test = test_final[available_features].copy()
+            
+            # 누락된 피처를 0으로 채워서 완전한 매트릭스 만들기
+            final_features = []
+            for feat in self.feature_names:
+                if feat in X_test.columns:
+                    final_features.append(feat)
+                else:
+                    X_test[feat] = 0
+                    final_features.append(feat)
+            
+            X_test = X_test[final_features]
             
         else:
-            # 기존 방식 (공통 피처 추출)
+            # 기존 방식
             train_cols = set(train_final.columns)
             test_cols = set(test_final.columns)
-            
             common_features = list((train_cols & test_cols) - {'ID', 'support_needs'})
             common_features = sorted(common_features)
-            
             X_test = test_final[common_features]
         
         test_ids = test_final['ID']
@@ -182,8 +199,12 @@ class PredictionSystem:
                     predictions[name] = pred_proba
                     
                 elif name == 'xgboost':
-                    # XGBoost는 피처 이름에 매우 민감하므로 값만 사용
-                    xgb_test = xgb.DMatrix(X_test.values)
+                    # XGBoost를 위한 정확한 피처 이름 처리
+                    if self.feature_names is not None:
+                        xgb_test = xgb.DMatrix(X_test.values, feature_names=self.feature_names)
+                    else:
+                        xgb_test = xgb.DMatrix(X_test.values)
+                    
                     pred_proba = model.predict(xgb_test)
                     if pred_proba.ndim == 1:
                         pred_proba_multi = np.zeros((len(pred_proba), 3))
@@ -194,37 +215,44 @@ class PredictionSystem:
                     predictions[name] = pred_proba
                     
                 elif name == 'catboost':
-                    # CatBoost도 값만 사용
                     pred_proba = model.predict_proba(X_test.values)
                     predictions[name] = pred_proba
                 
                 elif name == 'stacking':
-                    # Stacking 모델은 기본 모델들의 예측을 입력으로 사용
-                    if len(predictions) >= 2:
-                        # 기존 예측들을 메타 피처로 사용
+                    # 스태킹 모델은 기본 모델들의 예측을 입력으로 사용
+                    base_models = ['lightgbm', 'xgboost', 'catboost', 'random_forest']
+                    valid_base_models = [m for m in base_models if m in predictions]
+                    
+                    if len(valid_base_models) >= 2:
+                        # 기본 모델들의 예측 결합
                         base_predictions = []
-                        for pred_name, pred_proba in predictions.items():
-                            if pred_name != 'stacking':
-                                base_predictions.append(pred_proba)
+                        for base_name in valid_base_models:
+                            base_predictions.append(predictions[base_name])
                         
-                        if base_predictions:
-                            meta_features = np.hstack(base_predictions)
-                            
-                            if hasattr(model, 'predict_proba'):
-                                pred_proba = model.predict_proba(meta_features)
-                            else:
-                                pred_class = model.predict(meta_features)
-                                pred_proba = np.zeros((len(pred_class), 3))
-                                for i, cls in enumerate(pred_class):
-                                    pred_proba[i, cls] = 1.0
-                            
+                        meta_features = np.hstack(base_predictions)
+                        
+                        # 메타 모델이 기대하는 피처 수와 일치하는지 확인
+                        expected_features = model.n_features_in_ if hasattr(model, 'n_features_in_') else None
+                        
+                        if expected_features is not None and meta_features.shape[1] != expected_features:
+                            print(f"  {name}: 피처 크기 불일치 ({meta_features.shape[1]} vs {expected_features}) - 건너뜀")
+                            continue
+                        
+                        if hasattr(model, 'predict_proba'):
+                            pred_proba = model.predict_proba(meta_features)
+                            predictions[name] = pred_proba
+                        else:
+                            pred_class = model.predict(meta_features)
+                            pred_proba = np.zeros((len(pred_class), 3))
+                            for i, cls in enumerate(pred_class):
+                                pred_proba[i, cls] = 1.0
                             predictions[name] = pred_proba
                     else:
                         print(f"  {name}: 기본 모델 부족으로 건너뜀")
                         continue
                     
                 else:
-                    # sklearn 모델들 - 값만 사용
+                    # sklearn 모델들
                     if hasattr(model, 'predict_proba'):
                         pred_proba = model.predict_proba(X_test.values)
                         predictions[name] = pred_proba
@@ -247,14 +275,14 @@ class PredictionSystem:
         """앙상블 예측 생성"""
         print("앙상블 예측 생성")
         
-        # 성능 기반 가중치
+        # 성능 기반 가중치 (개선된 버전)
         weights = {
-            'lightgbm': 0.35,
-            'xgboost': 0.25,
+            'lightgbm': 0.40,
+            'xgboost': 0.30,
             'catboost': 0.20,
-            'random_forest': 0.10,
-            'extra_trees': 0.05,
-            'neural_network': 0.05,
+            'random_forest': 0.05,
+            'extra_trees': 0.03,
+            'neural_network': 0.02,
             'stacking': 0.00,
             'voting': 0.00,
             'svm': 0.00
@@ -292,7 +320,6 @@ class PredictionSystem:
                 else:
                     ensemble_proba += weight * predictions[name]
         
-        # 예외 처리: 앙상블이 실패한 경우 가장 좋은 모델 사용
         if ensemble_proba is None:
             print("앙상블 실패 - 첫 번째 모델 사용")
             first_model = list(predictions.keys())[0]
@@ -342,8 +369,8 @@ class PredictionSystem:
         # 확률 범위 제한
         calibrated_proba = np.clip(calibrated_proba, 0.001, 0.999)
         
-        # 온도 스케일링 유사 기법
-        temperature = 1.2
+        # 온도 스케일링 유사 기법 (개선)
+        temperature = 1.1
         calibrated_proba = np.exp(np.log(calibrated_proba) / temperature)
         
         # 재정규화
@@ -484,7 +511,6 @@ class PredictionSystem:
         """대체 예측 생성"""
         print("대체 예측 생성")
         
-        # 간단한 모델로 예측
         from sklearn.ensemble import RandomForestClassifier
         
         # 훈련 데이터 다시 로드 및 처리

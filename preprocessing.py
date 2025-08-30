@@ -18,7 +18,8 @@ class DataPreprocessor:
         self.imputers = {}
         self.selected_features = None
         self.variance_selector = None
-        self.feature_order = None  # 피처 순서 저장
+        self.feature_order = None
+        self.is_fitted = False
         
     def handle_missing_values(self, train_df, test_df):
         """결측치 처리"""
@@ -81,15 +82,16 @@ class DataPreprocessor:
                 Q3 = train_df[col].quantile(0.75)
                 IQR = Q3 - Q1
                 
-                lower_bound = Q1 - 1.5 * IQR
-                upper_bound = Q3 + 1.5 * IQR
-                
-                outliers_before = ((train_df[col] < lower_bound) | (train_df[col] > upper_bound)).sum()
-                
-                train_clean[col] = np.clip(train_clean[col], lower_bound, upper_bound)
-                
-                if outliers_before > 0:
-                    print(f"  {col}: {outliers_before}개 이상치 클리핑")
+                if IQR > 0:
+                    lower_bound = Q1 - 1.5 * IQR
+                    upper_bound = Q3 + 1.5 * IQR
+                    
+                    outliers_before = ((train_df[col] < lower_bound) | (train_df[col] > upper_bound)).sum()
+                    
+                    train_clean[col] = np.clip(train_clean[col], lower_bound, upper_bound)
+                    
+                    if outliers_before > 50:  # 너무 많은 로그 방지
+                        print(f"  {col}: {outliers_before}개 이상치 클리핑")
         
         return train_clean
     
@@ -118,10 +120,10 @@ class DataPreprocessor:
         
         if removed_cols:
             print(f"제거된 상수 피처: {len(removed_cols)}개")
-            for col in removed_cols[:5]:  # 처음 5개만 출력
+            for col in removed_cols[:3]:  # 처음 3개만 출력
                 print(f"  - {col}")
-            if len(removed_cols) > 5:
-                print(f"  ... 외 {len(removed_cols) - 5}개")
+            if len(removed_cols) > 3:
+                print(f"  ... 외 {len(removed_cols) - 3}개")
         
         # 상수가 아닌 피처만 유지
         keep_cols_train = ['ID'] + selected_numeric_cols
@@ -226,6 +228,10 @@ class DataPreprocessor:
         X = train_df[feature_cols]
         y = train_df['support_needs']
         
+        # 결측치와 무한대값 처리
+        X = X.fillna(0)
+        X = X.replace([np.inf, -np.inf], 0)
+        
         # 상호정보량 기반 피처 선택
         if self.feature_selector is None:
             self.feature_selector = SelectKBest(score_func=mutual_info_classif, k=k)
@@ -324,36 +330,34 @@ class DataPreprocessor:
         if self.selected_features is None:
             return train_df, test_df
         
-        # ID와 타겟 처리
-        train_cols = ['ID'] + self.selected_features
-        if 'support_needs' in train_df.columns:
-            train_cols.append('support_needs')
+        # 피처 순서 고정 (첫 번째 실행시에만)
+        if self.feature_order is None and not self.is_fitted:
+            self.feature_order = sorted(self.selected_features)
+            self.is_fitted = True
         
-        test_cols = ['ID'] + self.selected_features
-        
-        # 존재하는 컬럼만 선택
-        train_cols = [col for col in train_cols if col in train_df.columns]
-        test_cols = [col for col in test_cols if col in test_df.columns]
-        
-        # 누락된 피처는 0으로 채우기
-        missing_in_test = set(self.selected_features) - set(test_df.columns)
-        for col in missing_in_test:
-            test_df[col] = 0
-            test_cols.append(col)
-        
-        missing_in_train = set(self.selected_features) - set(train_df.columns)
-        for col in missing_in_train:
-            train_df[col] = 0
-            train_cols.append(col)
-        
-        # 최종 컬럼 순서 정렬
-        train_cols = ['ID'] + sorted([col for col in train_cols if col not in ['ID', 'support_needs']])
-        if 'support_needs' in train_df.columns:
-            train_cols.append('support_needs')
+        # 기존 피처 순서 사용
+        if self.feature_order is not None:
+            # 누락된 피처를 0으로 추가
+            for col in self.feature_order:
+                if col not in train_df.columns:
+                    train_df[col] = 0
+                if col not in test_df.columns:
+                    test_df[col] = 0
             
-        test_cols = ['ID'] + sorted([col for col in test_cols if col != 'ID'])
+            # ID와 타겟 처리
+            train_cols = ['ID'] + self.feature_order
+            if 'support_needs' in train_df.columns:
+                train_cols.append('support_needs')
+            
+            test_cols = ['ID'] + self.feature_order
+            
+            # 존재하는 컬럼만 선택
+            train_cols = [col for col in train_cols if col in train_df.columns]
+            test_cols = [col for col in test_cols if col in test_df.columns]
+            
+            return train_df[train_cols], test_df[test_cols]
         
-        return train_df[train_cols], test_df[test_cols]
+        return train_df, test_df
     
     def process_data(self, train_df, test_df):
         """전체 전처리 파이프라인"""
@@ -420,6 +424,10 @@ class DataPreprocessor:
         y = train_df['support_needs']
         X_test = test_df[common_features]
         test_ids = test_df['ID']
+        
+        # 무한대값과 결측치 제거
+        X = X.fillna(0).replace([np.inf, -np.inf], 0)
+        X_test = X_test.fillna(0).replace([np.inf, -np.inf], 0)
         
         # 시간 기반 분할
         train_size = int(len(X) * (1 - test_size))

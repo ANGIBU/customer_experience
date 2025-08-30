@@ -28,23 +28,45 @@ class ValidationSystem:
         if common_ids:
             issues.append(f"공통 ID {len(common_ids)}개 발견")
         
-        # 시간적 순서 확인
+        # 시간적 순서 확인 개선
         if train_ids and test_ids:
             try:
-                train_id_nums = [int(id.split('_')[1]) for id in train_ids if '_' in id]
-                test_id_nums = [int(id.split('_')[1]) for id in test_ids if '_' in id]
+                train_id_nums = []
+                test_id_nums = []
+                
+                for train_id in train_ids:
+                    if '_' in str(train_id):
+                        try:
+                            num = int(str(train_id).split('_')[1])
+                            train_id_nums.append(num)
+                        except:
+                            continue
+                
+                for test_id in test_ids:
+                    if '_' in str(test_id):
+                        try:
+                            num = int(str(test_id).split('_')[1])
+                            test_id_nums.append(num)
+                        except:
+                            continue
                 
                 if train_id_nums and test_id_nums:
                     train_max = max(train_id_nums)
                     test_min = min(test_id_nums)
+                    train_min = min(train_id_nums)
+                    test_max = max(test_id_nums)
                     
+                    # 시간적 순서가 맞는지 확인
                     if train_max >= test_min:
-                        # 이 경우는 자연스러운 시간 순서이므로 문제 없음
-                        print("시간적 순서 정상 (연속적 ID)")
+                        overlap_ratio = len([x for x in train_id_nums if x >= test_min]) / len(train_id_nums)
+                        if overlap_ratio > 0.1:  # 10% 이상 겹치면 문제
+                            issues.append(f"시간적 순서 위반: 겹침 비율 {overlap_ratio:.1%}")
+                        else:
+                            print("시간적 순서 경미한 겹침 (허용 범위)")
                     else:
                         print("시간적 순서 정상")
-            except:
-                print("ID 형식 분석 불가")
+            except Exception as e:
+                print(f"ID 시간 순서 분석 오류: {e}")
         
         # 타겟 직접 누수 확인
         if 'support_needs' in train_df.columns:
@@ -53,6 +75,15 @@ class ValidationSystem:
                             if col.lower() == 'support_needs' and col != 'support_needs']
             if direct_leakage:
                 issues.append(f"타겟 직접 누수: {direct_leakage}")
+            
+            # after_interaction 피처의 높은 상관관계 확인
+            if 'after_interaction' in train_df.columns:
+                try:
+                    correlation = train_df[['after_interaction', 'support_needs']].corr().iloc[0, 1]
+                    if abs(correlation) > 0.1:  # 임계값 낮춤
+                        print(f"after_interaction 상관관계: {correlation:.3f} (주의 필요)")
+                except:
+                    pass
         
         self.leakage_issues = issues
         
@@ -76,7 +107,11 @@ class ValidationSystem:
             random_state=42,
             n_jobs=-1
         )
-        model.fit(X_train, y_train)
+        
+        # 데이터 전처리
+        X_clean = X_train.fillna(0).replace([np.inf, -np.inf], 0)
+        
+        model.fit(X_clean, y_train)
         return model
     
     def stratified_cross_validation(self, X, y, n_splits=5):
@@ -98,7 +133,10 @@ class ValidationSystem:
                 
                 # 모델 학습 및 예측
                 model = self.create_robust_model(X_train_fold, y_train_fold)
-                y_pred = model.predict(X_val_fold)
+                
+                # 예측 시 데이터 전처리
+                X_val_clean = X_val_fold.fillna(0).replace([np.inf, -np.inf], 0)
+                y_pred = model.predict(X_val_clean)
                 
                 accuracy = accuracy_score(y_val_fold, y_pred)
                 fold_scores.append(accuracy)
@@ -112,8 +150,8 @@ class ValidationSystem:
                 print(f"  Fold {fold + 1} 오류: {e}")
                 fold_scores.append(0.0)
         
-        mean_score = np.mean(fold_scores)
-        std_score = np.std(fold_scores)
+        mean_score = np.mean(fold_scores) if fold_scores else 0.0
+        std_score = np.std(fold_scores) if fold_scores else 0.0
         
         print(f"평균 정확도: {mean_score:.4f} (+/- {std_score:.4f})")
         
@@ -159,7 +197,10 @@ class ValidationSystem:
                 y_val_fold = y.iloc[val_idx]
                 
                 model = self.create_robust_model(X_train_fold, y_train_fold)
-                y_pred = model.predict(X_val_fold)
+                
+                # 예측 시 데이터 전처리
+                X_val_clean = X_val_fold.fillna(0).replace([np.inf, -np.inf], 0)
+                y_pred = model.predict(X_val_clean)
                 
                 accuracy = accuracy_score(y_val_fold, y_pred)
                 fold_scores.append(accuracy)
@@ -170,8 +211,8 @@ class ValidationSystem:
                 print(f"  시점 {fold + 1} 오류: {e}")
                 fold_scores.append(0.0)
         
-        mean_score = np.mean(fold_scores)
-        std_score = np.std(fold_scores)
+        mean_score = np.mean(fold_scores) if fold_scores else 0.0
+        std_score = np.std(fold_scores) if fold_scores else 0.0
         
         print(f"시간 기반 평균 정확도: {mean_score:.4f} (+/- {std_score:.4f})")
         
@@ -187,7 +228,10 @@ class ValidationSystem:
         
         try:
             model = self.create_robust_model(X_train, y_train)
-            y_pred = model.predict(X_val)
+            
+            # 예측 시 데이터 전처리
+            X_val_clean = X_val.fillna(0).replace([np.inf, -np.inf], 0)
+            y_pred = model.predict(X_val_clean)
             
             accuracy = accuracy_score(y_val, y_pred)
             cm = confusion_matrix(y_val, y_pred, labels=[0, 1, 2])
@@ -231,7 +275,10 @@ class ValidationSystem:
                 )
                 
                 model = self.create_robust_model(X_train, y_train)
-                y_pred = model.predict(X_val)
+                
+                # 예측 시 데이터 전처리
+                X_val_clean = X_val.fillna(0).replace([np.inf, -np.inf], 0)
+                y_pred = model.predict(X_val_clean)
                 
                 accuracy = accuracy_score(y_val, y_pred)
                 scores.append(accuracy)
@@ -309,9 +356,12 @@ class ValidationSystem:
         print("=" * 40)
         
         try:
+            # 데이터 정리
+            X_clean = X_train.fillna(0).replace([np.inf, -np.inf], 0)
+            
             # 1. 홀드아웃 검증
             X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+                X_clean, y_train, test_size=0.2, random_state=42, stratify=y_train
             )
             
             holdout_results = self.holdout_validation(
@@ -319,25 +369,26 @@ class ValidationSystem:
             )
             
             # 2. 계층화 교차 검증
-            stratified_results = self.stratified_cross_validation(X_train, y_train)
+            stratified_results = self.stratified_cross_validation(X_clean, y_train)
             
             # 3. 시간 기반 교차 검증
-            temporal_results = self.temporal_cross_validation(X_train, y_train)
+            temporal_results = self.temporal_cross_validation(X_clean, y_train)
             
             # 4. 안정성 테스트
-            stability_results = self.stability_test(X_train, y_train)
+            stability_results = self.stability_test(X_clean, y_train)
             
             # 5. 분포 분석
             model = self.create_robust_model(X_train_split, y_train_split)
-            y_pred = model.predict(X_val_split)
+            X_val_clean = X_val_split.fillna(0).replace([np.inf, -np.inf], 0)
+            y_pred = model.predict(X_val_clean)
             distribution_results = self.distribution_analysis(y_val_split, y_pred)
             
-            # 종합 점수 계산
+            # 종합 점수 계산 (개선된 가중치)
             validation_score = (
-                holdout_results['accuracy'] * 0.25 +
-                stratified_results['mean_score'] * 0.25 +
-                temporal_results['mean_score'] * 0.25 +
-                stability_results['stability_score'] * 0.25
+                holdout_results['accuracy'] * 0.30 +
+                stratified_results['mean_score'] * 0.30 +
+                temporal_results['mean_score'] * 0.20 +
+                stability_results['stability_score'] * 0.20
             )
             
             print(f"\n검증 결과 요약:")
@@ -346,6 +397,14 @@ class ValidationSystem:
             print(f"시간 기반 CV: {temporal_results['mean_score']:.4f}")
             print(f"안정성: {stability_results['stability_score']:.3f}")
             print(f"종합 점수: {validation_score:.4f}")
+            
+            # 성능 평가
+            if validation_score >= 0.55:
+                print("검증 성능: 우수")
+            elif validation_score >= 0.50:
+                print("검증 성능: 양호")
+            else:
+                print("검증 성능: 개선 필요")
             
             self.validation_results = {
                 'holdout': holdout_results,
@@ -374,7 +433,10 @@ class ValidationSystem:
         print("최종 모델 검증")
         
         try:
-            y_pred = model.predict(X_test)
+            # 데이터 전처리
+            X_test_clean = X_test.fillna(0).replace([np.inf, -np.inf], 0)
+            
+            y_pred = model.predict(X_test_clean)
             accuracy = accuracy_score(y_test, y_pred)
             
             print(f"최종 테스트 정확도: {accuracy:.4f}")
@@ -428,9 +490,14 @@ class ValidationSystem:
                     random_state=seed,
                     n_jobs=-1
                 )
-                temp_model.fit(X_train, y_train)
                 
-                y_pred = temp_model.predict(X_test)
+                # 데이터 전처리
+                X_train_clean = X_train.fillna(0).replace([np.inf, -np.inf], 0)
+                X_test_clean = X_test.fillna(0).replace([np.inf, -np.inf], 0)
+                
+                temp_model.fit(X_train_clean, y_train)
+                y_pred = temp_model.predict(X_test_clean)
+                
                 accuracy = accuracy_score(y_test, y_pred)
                 reliabilities.append(accuracy)
                 
@@ -451,7 +518,7 @@ class ValidationSystem:
         if reliable:
             print("모델 신뢰성 통과")
         else:
-            print("모델 신뢰성 부족")
+            print("모델 신뢰성 개선 필요")
         
         return {
             'mean_reliability': mean_reliability,
@@ -467,9 +534,12 @@ class ValidationSystem:
         try:
             predictions_list = []
             
+            # 데이터 전처리
+            X_clean = X.fillna(0).replace([np.inf, -np.inf], 0)
+            
             for run in range(n_runs):
                 # 동일한 데이터로 여러 번 예측
-                y_pred = model.predict(X)
+                y_pred = model.predict(X_clean)
                 predictions_list.append(y_pred)
             
             # 예측 일관성 확인
