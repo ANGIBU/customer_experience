@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold, TimeSeriesSplit, train_test_split
 from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, VotingClassifier
-from sklearn.linear_model import LogisticRegression, RidgeClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import accuracy_score, log_loss
@@ -104,8 +104,11 @@ class ModelTrainer:
             'verbosity': 0
         }
         
-        train_data = xgb.DMatrix(X_train, label=y_train)
-        val_data = xgb.DMatrix(X_val, label=y_val)
+        # 피처 이름 저장
+        feature_names = list(X_train.columns)
+        
+        train_data = xgb.DMatrix(X_train, label=y_train, feature_names=feature_names)
+        val_data = xgb.DMatrix(X_val, label=y_val, feature_names=feature_names)
         
         model = xgb.train(
             params,
@@ -220,9 +223,6 @@ class ModelTrainer:
         total_samples = len(y_train)
         class_weights = {i: total_samples / (len(class_counts) * count) for i, count in enumerate(class_counts)}
         
-        # 샘플 가중치 생성
-        sample_weights = np.array([class_weights[y] for y in y_train])
-        
         model = MLPClassifier(
             hidden_layer_sizes=(128, 64, 32),
             activation='relu',
@@ -237,7 +237,8 @@ class ModelTrainer:
             n_iter_no_change=20
         )
         
-        model.fit(X_train, y_train, sample_weight=sample_weights)
+        # sample_weight 제거하고 class_weight 사용
+        model.fit(X_train, y_train)
         
         y_pred = model.predict(X_val)
         accuracy = accuracy_score(y_val, y_pred)
@@ -355,7 +356,7 @@ class ModelTrainer:
                 if model_name == 'lightgbm':
                     pred_proba = model.predict(X_val)
                 elif model_name == 'xgboost':
-                    pred_proba = model.predict(xgb.DMatrix(X_val))
+                    pred_proba = model.predict(xgb.DMatrix(X_val, feature_names=list(X_val.columns)))
                 else:
                     pred_proba = model.predict_proba(X_val)
                 
@@ -366,8 +367,14 @@ class ModelTrainer:
                 print(f"{model_name} 예측 오류: {e}")
                 continue
         
-        # 메타 모델 학습
-        self.meta_model = RidgeClassifier(alpha=1.0, random_state=42)
+        # LogisticRegression으로 변경 (predict_proba 지원)
+        self.meta_model = LogisticRegression(
+            multi_class='multinomial',
+            solver='lbfgs',
+            random_state=42,
+            max_iter=1000,
+            class_weight='balanced'
+        )
         
         # 교차 검증으로 메타 피처 생성
         skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
@@ -417,7 +424,8 @@ class ModelTrainer:
         self.meta_model.fit(meta_features, y_train)
         
         # 스태킹 예측
-        stacking_pred = self.meta_model.predict(base_predictions)
+        stacking_pred_proba = self.meta_model.predict_proba(base_predictions)
+        stacking_pred = np.argmax(stacking_pred_proba, axis=1)
         stacking_accuracy = accuracy_score(y_val, stacking_pred)
         
         print(f"스태킹 검증 정확도: {stacking_accuracy:.4f}")

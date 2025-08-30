@@ -2,7 +2,7 @@
 
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder, PolynomialFeatures
+from sklearn.preprocessing import LabelEncoder
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.model_selection import StratifiedKFold
@@ -15,6 +15,7 @@ class FeatureEngineer:
         self.target_encoders = {}
         self.kmeans_model = None
         self.pca_model = None
+        self.feature_names_order = None  # 피처 순서 저장
         
     def create_basic_features(self, df):
         """기본 피처 생성"""
@@ -64,15 +65,20 @@ class FeatureEngineer:
         if 'contract_length' in df.columns and 'payment_interval' in df.columns:
             df_new['contract_loyalty'] = df_new['contract_length'] / (df_new['payment_interval'] + 1)
         
-        # 연령대별 행동 패턴
+        # 연령대별 행동 패턴 수정 - 정규화 안전성 개선
         if 'age' in df.columns and 'frequent' in df.columns:
-            age_normalized = (df_new['age'] - df_new['age'].min()) / (df_new['age'].max() - df_new['age'].min())
+            age_min = df_new['age'].min()
+            age_max = df_new['age'].max()
+            if age_max > age_min:
+                age_normalized = (df_new['age'] - age_min) / (age_max - age_min)
+            else:
+                age_normalized = df_new['age'] / (df_new['age'].mean() + 1)
             df_new['age_usage_pattern'] = age_normalized * df_new['frequent']
         
         # 상호작용 품질 지표
-        if all(col in df.columns for col in ['after_interaction', 'frequent', 'tenure']):
-            df_new['interaction_quality'] = df_new['after_interaction'] / (df_new['frequent'] + df_new['tenure'] + 1)
-            df_new['interaction_per_month'] = df_new['after_interaction'] / ((df_new['tenure'] / 30) + 1)
+        if all(col in df.columns for col in ['interaction_normalized', 'frequent', 'tenure']):
+            df_new['interaction_quality'] = df_new['interaction_normalized'] / (df_new['frequent'] + df_new['tenure'] + 1)
+            df_new['interaction_per_month'] = df_new['interaction_normalized'] / ((df_new['tenure'] / 30) + 1)
         
         return df_new
     
@@ -84,10 +90,10 @@ class FeatureEngineer:
         base_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         available_features = [feat for feat in base_features if feat in df.columns]
         
-        # 2차 상호작용
+        # 미리 정의된 상호작용 쌍 (순서 보장)
         interaction_pairs = [
             ('age', 'tenure'),
-            ('frequent', 'tenure'),
+            ('frequent', 'tenure'), 
             ('age', 'frequent'),
             ('payment_interval', 'contract_length'),
             ('frequent', 'payment_interval')
@@ -99,10 +105,12 @@ class FeatureEngineer:
                 df_new[f'{feat1}_{feat2}_add'] = df_new[feat1] + df_new[feat2]
                 df_new[f'{feat1}_{feat2}_diff'] = abs(df_new[feat1] - df_new[feat2])
         
-        # 제곱 피처
-        for feat in available_features:
-            df_new[f'{feat}_squared'] = df_new[feat] ** 2
-            df_new[f'{feat}_sqrt'] = np.sqrt(abs(df_new[feat]))
+        # 제곱 피처 (순서 보장)
+        square_features = ['age', 'contract_length', 'frequent', 'payment_interval', 'tenure']
+        for feat in square_features:
+            if feat in df.columns:
+                df_new[f'{feat}_squared'] = df_new[feat] ** 2
+                df_new[f'{feat}_sqrt'] = np.sqrt(abs(df_new[feat]))
         
         return df_new
     
@@ -156,8 +164,12 @@ class FeatureEngineer:
         test_numeric = test_df[numeric_cols].fillna(0)
         
         # K-means 클러스터링
-        self.kmeans_model = KMeans(n_clusters=8, random_state=42, n_init=10)
-        train_clusters = self.kmeans_model.fit_predict(train_numeric)
+        if self.kmeans_model is None:
+            self.kmeans_model = KMeans(n_clusters=8, random_state=42, n_init=10)
+            train_clusters = self.kmeans_model.fit_predict(train_numeric)
+        else:
+            train_clusters = self.kmeans_model.predict(train_numeric)
+            
         test_clusters = self.kmeans_model.predict(test_numeric)
         
         train_new = train_df.copy()
@@ -183,8 +195,12 @@ class FeatureEngineer:
         test_numeric = test_df[numeric_cols].fillna(0)
         
         # PCA 변환
-        self.pca_model = PCA(n_components=3, random_state=42)
-        train_pca = self.pca_model.fit_transform(train_numeric)
+        if self.pca_model is None:
+            self.pca_model = PCA(n_components=3, random_state=42)
+            train_pca = self.pca_model.fit_transform(train_numeric)
+        else:
+            train_pca = self.pca_model.transform(train_numeric)
+            
         test_pca = self.pca_model.transform(test_numeric)
         
         train_new = train_df.copy()
@@ -208,13 +224,15 @@ class FeatureEngineer:
         df_new['numeric_median'] = df_new[numeric_cols].median(axis=1)
         df_new['numeric_range'] = df_new[numeric_cols].max(axis=1) - df_new[numeric_cols].min(axis=1)
         
-        # 분위수 기반 플래그
-        for col in numeric_cols:
-            q25 = df[col].quantile(0.25)
-            q75 = df[col].quantile(0.75)
-            
-            df_new[f'{col}_low'] = (df_new[col] <= q25).astype(int)
-            df_new[f'{col}_high'] = (df_new[col] >= q75).astype(int)
+        # 플래그 피처 (순서 고정)
+        flag_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        for col in flag_features:
+            if col in df.columns:
+                q25 = df[col].quantile(0.25)
+                q75 = df[col].quantile(0.75)
+                
+                df_new[f'{col}_low'] = (df_new[col] <= q25).astype(int)
+                df_new[f'{col}_high'] = (df_new[col] >= q75).astype(int)
         
         return df_new
     
@@ -226,14 +244,16 @@ class FeatureEngineer:
         test_new = test_df.copy()
         
         for col in categorical_cols:
-            # 전체 데이터로 인코더 학습
-            combined_data = pd.concat([train_df[col], test_df[col]])
-            
-            self.label_encoders[col] = LabelEncoder()
-            self.label_encoders[col].fit(combined_data)
-            
-            train_new[col] = self.label_encoders[col].transform(train_new[col])
-            test_new[col] = self.label_encoders[col].transform(test_new[col])
+            if col in train_df.columns and col in test_df.columns:
+                # 전체 데이터로 인코더 학습
+                combined_data = pd.concat([train_df[col], test_df[col]])
+                
+                if col not in self.label_encoders:
+                    self.label_encoders[col] = LabelEncoder()
+                    self.label_encoders[col].fit(combined_data)
+                
+                train_new[col] = self.label_encoders[col].transform(train_new[col])
+                test_new[col] = self.label_encoders[col].transform(test_new[col])
         
         return train_new, test_new
     
@@ -258,6 +278,51 @@ class FeatureEngineer:
             print("after_interaction 피처 변환 완료")
         
         return train_new, test_new
+    
+    def ensure_feature_consistency(self, train_df, test_df):
+        """피처 일관성 보장"""
+        # 기본 컬럼들
+        base_cols = ['ID', 'age', 'gender', 'subscription_type', 'tenure', 
+                    'frequent', 'payment_interval', 'contract_length']
+        
+        # 훈련 데이터에만 있는 컬럼
+        if 'support_needs' in train_df.columns:
+            base_cols.append('support_needs')
+        
+        # 공통 컬럼 찾기
+        train_cols = set(train_df.columns)
+        test_cols = set(test_df.columns)
+        common_cols = train_cols & test_cols
+        
+        # 누락된 피처를 0으로 채우기
+        for col in train_cols - common_cols:
+            if col not in base_cols and col != 'support_needs':
+                test_df[col] = 0
+                print(f"테스트 데이터에 {col} 피처 추가 (0으로 채움)")
+        
+        for col in test_cols - common_cols:
+            if col not in base_cols:
+                train_df[col] = 0
+                print(f"훈련 데이터에 {col} 피처 추가 (0으로 채움)")
+        
+        # 컬럼 순서 통일 (처음 생성시에만)
+        if self.feature_names_order is None:
+            feature_cols = [col for col in train_df.columns 
+                           if col not in ['ID', 'support_needs']]
+            self.feature_names_order = sorted(feature_cols)
+        
+        # 순서대로 정렬
+        train_ordered_cols = ['ID'] + self.feature_names_order
+        if 'support_needs' in train_df.columns:
+            train_ordered_cols.append('support_needs')
+        
+        test_ordered_cols = ['ID'] + self.feature_names_order
+        
+        # 존재하는 컬럼만 필터링
+        train_ordered_cols = [col for col in train_ordered_cols if col in train_df.columns]
+        test_ordered_cols = [col for col in test_ordered_cols if col in test_df.columns]
+        
+        return train_df[train_ordered_cols], test_df[test_ordered_cols]
     
     def create_features(self, train_df, test_df):
         """전체 피처 생성 파이프라인"""
@@ -296,6 +361,9 @@ class FeatureEngineer:
         
         # 9. 범주형 인코딩
         train_df, test_df = self.encode_categorical(train_df, test_df)
+        
+        # 10. 피처 일관성 보장
+        train_df, test_df = self.ensure_feature_consistency(train_df, test_df)
         
         final_features = train_df.shape[1]
         created_features = final_features - original_features

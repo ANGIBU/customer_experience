@@ -18,6 +18,7 @@ class DataPreprocessor:
         self.imputers = {}
         self.selected_features = None
         self.variance_selector = None
+        self.feature_order = None  # 피처 순서 저장
         
     def handle_missing_values(self, train_df, test_df):
         """결측치 처리"""
@@ -34,8 +35,12 @@ class DataPreprocessor:
         
         for col in common_numeric:
             if train_clean[col].isnull().sum() > 0 or test_clean[col].isnull().sum() > 0:
-                self.imputers[col] = SimpleImputer(strategy='median')
-                train_clean[col] = self.imputers[col].fit_transform(train_clean[[col]]).flatten()
+                if col not in self.imputers:
+                    self.imputers[col] = SimpleImputer(strategy='median')
+                    train_clean[col] = self.imputers[col].fit_transform(train_clean[[col]]).flatten()
+                else:
+                    train_clean[col] = self.imputers[col].transform(train_clean[[col]]).flatten()
+                
                 test_clean[col] = self.imputers[col].transform(test_clean[[col]]).flatten()
         
         # 공통 범주형 컬럼 찾기
@@ -46,9 +51,16 @@ class DataPreprocessor:
         
         for col in common_categorical:
             if train_clean[col].isnull().sum() > 0 or test_clean[col].isnull().sum() > 0:
-                mode_val = train_clean[col].mode().iloc[0]
-                train_clean[col].fillna(mode_val, inplace=True)
-                test_clean[col].fillna(mode_val, inplace=True)
+                if col not in self.imputers:
+                    mode_val = train_clean[col].mode()
+                    if len(mode_val) > 0:
+                        mode_val = mode_val.iloc[0]
+                    else:
+                        mode_val = 'Unknown'
+                    self.imputers[col] = mode_val
+                
+                train_clean[col].fillna(self.imputers[col], inplace=True)
+                test_clean[col].fillna(self.imputers[col], inplace=True)
         
         return train_clean, test_clean
     
@@ -64,19 +76,20 @@ class DataPreprocessor:
         
         # IQR 방법으로 이상치 클리핑
         for col in numeric_cols:
-            Q1 = train_df[col].quantile(0.25)
-            Q3 = train_df[col].quantile(0.75)
-            IQR = Q3 - Q1
-            
-            lower_bound = Q1 - 1.5 * IQR
-            upper_bound = Q3 + 1.5 * IQR
-            
-            outliers_before = ((train_df[col] < lower_bound) | (train_df[col] > upper_bound)).sum()
-            
-            train_clean[col] = np.clip(train_clean[col], lower_bound, upper_bound)
-            
-            if outliers_before > 0:
-                print(f"  {col}: {outliers_before}개 이상치 클리핑")
+            if col in train_df.columns:
+                Q1 = train_df[col].quantile(0.25)
+                Q3 = train_df[col].quantile(0.75)
+                IQR = Q3 - Q1
+                
+                lower_bound = Q1 - 1.5 * IQR
+                upper_bound = Q3 + 1.5 * IQR
+                
+                outliers_before = ((train_df[col] < lower_bound) | (train_df[col] > upper_bound)).sum()
+                
+                train_clean[col] = np.clip(train_clean[col], lower_bound, upper_bound)
+                
+                if outliers_before > 0:
+                    print(f"  {col}: {outliers_before}개 이상치 클리핑")
         
         return train_clean
     
@@ -91,11 +104,12 @@ class DataPreprocessor:
         if not numeric_cols:
             return train_df, test_df
         
-        self.variance_selector = VarianceThreshold(threshold=0.001)
-        
-        # 훈련 데이터로 학습
-        train_numeric = train_df[numeric_cols].fillna(0)
-        self.variance_selector.fit(train_numeric)
+        if self.variance_selector is None:
+            self.variance_selector = VarianceThreshold(threshold=0.001)
+            
+            # 훈련 데이터로 학습
+            train_numeric = train_df[numeric_cols].fillna(0)
+            self.variance_selector.fit(train_numeric)
         
         # 선택된 피처 확인
         selected_mask = self.variance_selector.get_support()
@@ -104,8 +118,10 @@ class DataPreprocessor:
         
         if removed_cols:
             print(f"제거된 상수 피처: {len(removed_cols)}개")
-            for col in removed_cols:
+            for col in removed_cols[:5]:  # 처음 5개만 출력
                 print(f"  - {col}")
+            if len(removed_cols) > 5:
+                print(f"  ... 외 {len(removed_cols) - 5}개")
         
         # 상수가 아닌 피처만 유지
         keep_cols_train = ['ID'] + selected_numeric_cols
@@ -122,6 +138,10 @@ class DataPreprocessor:
         # support_needs 추가
         if 'support_needs' in train_df.columns:
             keep_cols_train.append('support_needs')
+        
+        # 실제 존재하는 컬럼만 선택
+        keep_cols_train = [col for col in keep_cols_train if col in train_df.columns]
+        keep_cols_test = [col for col in keep_cols_test if col in test_df.columns]
         
         train_clean = train_df[keep_cols_train]
         test_clean = test_df[keep_cols_test]
@@ -148,13 +168,21 @@ class DataPreprocessor:
             return train_scaled, test_scaled
         
         # Standard Scaler
-        self.scalers['standard'] = StandardScaler()
-        train_scaled[common_numeric_cols] = self.scalers['standard'].fit_transform(train_df[common_numeric_cols])
+        if 'standard' not in self.scalers:
+            self.scalers['standard'] = StandardScaler()
+            train_scaled[common_numeric_cols] = self.scalers['standard'].fit_transform(train_df[common_numeric_cols])
+        else:
+            train_scaled[common_numeric_cols] = self.scalers['standard'].transform(train_df[common_numeric_cols])
+        
         test_scaled[common_numeric_cols] = self.scalers['standard'].transform(test_df[common_numeric_cols])
         
         # Robust Scaler 추가
-        self.scalers['robust'] = RobustScaler()
-        train_robust = self.scalers['robust'].fit_transform(train_df[common_numeric_cols])
+        if 'robust' not in self.scalers:
+            self.scalers['robust'] = RobustScaler()
+            train_robust = self.scalers['robust'].fit_transform(train_df[common_numeric_cols])
+        else:
+            train_robust = self.scalers['robust'].transform(train_df[common_numeric_cols])
+        
         test_robust = self.scalers['robust'].transform(test_df[common_numeric_cols])
         
         for i, col in enumerate(common_numeric_cols):
@@ -162,15 +190,20 @@ class DataPreprocessor:
             test_scaled[f'{col}_robust'] = test_robust[:, i]
         
         # Quantile Transformer 추가
-        self.scalers['quantile'] = QuantileTransformer(output_distribution='normal', random_state=42)
-        train_quantile = self.scalers['quantile'].fit_transform(train_df[common_numeric_cols])
+        if 'quantile' not in self.scalers:
+            self.scalers['quantile'] = QuantileTransformer(output_distribution='normal', random_state=42)
+            train_quantile = self.scalers['quantile'].fit_transform(train_df[common_numeric_cols])
+        else:
+            train_quantile = self.scalers['quantile'].transform(train_df[common_numeric_cols])
+        
         test_quantile = self.scalers['quantile'].transform(test_df[common_numeric_cols])
         
         for i, col in enumerate(common_numeric_cols):
             train_scaled[f'{col}_quantile'] = train_quantile[:, i]
             test_scaled[f'{col}_quantile'] = test_quantile[:, i]
         
-        print(f"스케일링 완료: {len(common_numeric_cols)} → {len(common_numeric_cols) * 3} 피처")
+        scaling_factor = 3  # standard, robust, quantile
+        print(f"스케일링 완료: {len(common_numeric_cols)} → {len(common_numeric_cols) * scaling_factor} 피처")
         
         return train_scaled, test_scaled
     
@@ -187,17 +220,19 @@ class DataPreprocessor:
         
         if len(feature_cols) <= k:
             print(f"피처 수가 k보다 적음: {len(feature_cols)} <= {k}")
+            self.selected_features = feature_cols
             return feature_cols
         
         X = train_df[feature_cols]
         y = train_df['support_needs']
         
         # 상호정보량 기반 피처 선택
-        self.feature_selector = SelectKBest(score_func=mutual_info_classif, k=k)
-        X_selected = self.feature_selector.fit_transform(X, y)
-        
-        selected_mask = self.feature_selector.get_support()
-        self.selected_features = [feature_cols[i] for i, selected in enumerate(selected_mask) if selected]
+        if self.feature_selector is None:
+            self.feature_selector = SelectKBest(score_func=mutual_info_classif, k=k)
+            X_selected = self.feature_selector.fit_transform(X, y)
+            
+            selected_mask = self.feature_selector.get_support()
+            self.selected_features = [feature_cols[i] for i, selected in enumerate(selected_mask) if selected]
         
         print(f"선택된 피처: {len(self.selected_features)}개")
         
@@ -245,8 +280,6 @@ class DataPreprocessor:
         if train_null > 0 or test_null > 0:
             issues.append(f"결측치 - 훈련: {train_null}, 테스트: {test_null}")
         
-        # 상수 피처 확인은 이미 제거했으므로 생략
-        
         if issues:
             print("품질 문제:")
             for issue in issues:
@@ -262,21 +295,21 @@ class DataPreprocessor:
         
         df_new = df.copy()
         
-        # 기본 수치형 피처만 사용
+        # 기본 수치형 피처만 사용 (순서 고정)
         base_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         available_features = [feat for feat in base_features if feat in df.columns]
         
-        # 상호작용 생성
+        # 미리 정의된 상호작용 쌍 (순서 보장)
         interaction_pairs = [
-            ('frequent', 'tenure'),
-            ('age', 'contract_length')
+            ('age', 'contract_length'),  # 가장 중요한 상호작용을 첫 번째로
+            ('frequent', 'tenure')
         ]
         
         for feat1, feat2 in interaction_pairs:
             if feat1 in df.columns and feat2 in df.columns:
                 df_new[f'{feat1}_{feat2}_interaction'] = df_new[feat1] * df_new[feat2]
         
-        # 플래그 피처
+        # 플래그 피처 (순서 고정)
         if 'age' in df.columns:
             df_new['age_senior'] = (df_new['age'] >= 60).astype(int)
             df_new['age_young'] = (df_new['age'] <= 25).astype(int)
@@ -289,6 +322,42 @@ class DataPreprocessor:
         print(f"생성된 상호작용 피처: {created_count}개")
         
         return df_new
+    
+    def ensure_consistent_features(self, train_df, test_df):
+        """일관된 피처 구조 보장"""
+        if self.selected_features is None:
+            return train_df, test_df
+        
+        # ID와 타겟 처리
+        train_cols = ['ID'] + self.selected_features
+        if 'support_needs' in train_df.columns:
+            train_cols.append('support_needs')
+        
+        test_cols = ['ID'] + self.selected_features
+        
+        # 존재하는 컬럼만 선택
+        train_cols = [col for col in train_cols if col in train_df.columns]
+        test_cols = [col for col in test_cols if col in test_df.columns]
+        
+        # 누락된 피처는 0으로 채우기
+        missing_in_test = set(self.selected_features) - set(test_df.columns)
+        for col in missing_in_test:
+            test_df[col] = 0
+            test_cols.append(col)
+        
+        missing_in_train = set(self.selected_features) - set(train_df.columns)
+        for col in missing_in_train:
+            train_df[col] = 0
+            train_cols.append(col)
+        
+        # 최종 컬럼 순서 정렬
+        train_cols = ['ID'] + sorted([col for col in train_cols if col not in ['ID', 'support_needs']])
+        if 'support_needs' in train_df.columns:
+            train_cols.append('support_needs')
+            
+        test_cols = ['ID'] + sorted([col for col in test_cols if col != 'ID'])
+        
+        return train_df[train_cols], test_df[test_cols]
     
     def process_data(self, train_df, test_df):
         """전체 전처리 파이프라인"""
@@ -315,18 +384,10 @@ class DataPreprocessor:
         if 'support_needs' in train_df.columns:
             selected_features = self.select_best_features(train_df, k=60)
             
-            # 테스트 데이터에 존재하는 피처만 필터링
-            available_features = [col for col in selected_features if col in test_df.columns]
+            # 일관된 피처 구조 보장
+            train_df, test_df = self.ensure_consistent_features(train_df, test_df)
             
-            # 훈련 데이터 컬럼 준비
-            train_keep_cols = ['ID'] + available_features + ['support_needs']
-            train_df = train_df[train_keep_cols]
-            
-            # 테스트 데이터 컬럼 준비
-            test_keep_cols = ['ID'] + available_features
-            test_df = test_df[test_keep_cols]
-            
-            print(f"최종 사용 피처: {len(available_features)}개")
+            print(f"최종 사용 피처: {len(self.selected_features)}개")
         
         # 7. 품질 검증
         quality_ok, issues = self.validate_data_quality(train_df, test_df)
@@ -356,6 +417,9 @@ class DataPreprocessor:
         if 'support_needs' not in train_df.columns:
             raise ValueError("훈련 데이터에 support_needs 컬럼이 없습니다")
         
+        # 컬럼 순서 정렬 (일관성 보장)
+        common_features = sorted(common_features)
+        
         X = train_df[common_features]
         y = train_df['support_needs']
         X_test = test_df[common_features]
@@ -368,6 +432,9 @@ class DataPreprocessor:
         X_val = X.iloc[train_size:]
         y_train = y.iloc[:train_size]
         y_val = y.iloc[train_size:]
+        
+        # 피처 순서 저장
+        self.feature_order = common_features
         
         print(f"훈련: {X_train.shape}")
         print(f"검증: {X_val.shape}")
