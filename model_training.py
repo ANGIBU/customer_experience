@@ -508,10 +508,19 @@ class ModelTrainer:
         
         print(f"총 {saved_count}개 모델 저장 완료")
     
-    def train_models(self, X_train, X_val, y_train, y_val):
+    def train_models(self, X_train, X_val, y_train, y_val, engineer=None, preprocessor=None):
         """모든 모델 학습"""
         print("모델 학습 시작")
         print("=" * 40)
+        
+        # engineer와 preprocessor가 없으면 새로 생성
+        if engineer is None:
+            from feature_engineering import FeatureEngineer
+            engineer = FeatureEngineer()
+        
+        if preprocessor is None:
+            from preprocessing import DataPreprocessor  
+            preprocessor = DataPreprocessor()
         
         # 개별 모델 학습
         try:
