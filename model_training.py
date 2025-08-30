@@ -467,7 +467,7 @@ class ModelTrainer:
         
         return None, 0.0
     
-    def save_all_models(self, engineer, preprocessor):
+    def save_all_models(self, engineer, preprocessor, X_train):
         """모든 모델 저장"""
         print("모델 저장")
         
@@ -478,6 +478,13 @@ class ModelTrainer:
         try:
             joblib.dump(preprocessor, 'models/preprocessor.pkl')
             joblib.dump(engineer, 'models/feature_engineer.pkl')
+            
+            # 피처 정보 저장
+            feature_info = {
+                'feature_names': list(X_train.columns),
+                'feature_count': len(X_train.columns)
+            }
+            joblib.dump(feature_info, 'models/feature_info.pkl')
             print("전처리기 및 피처 엔지니어 저장 완료")
         except Exception as e:
             print(f"전처리기 저장 오류: {e}")
@@ -573,9 +580,7 @@ class ModelTrainer:
                 self.perform_time_series_cv(full_X, full_y, 'catboost')
         
         # 모델 저장
-        engineer = FeatureEngineer()
-        preprocessor = DataPreprocessor()
-        self.save_all_models(engineer, preprocessor)
+        self.save_all_models(engineer, preprocessor, X_train)
         
         print("\n모델 성능 요약:")
         if lgb_acc > 0:

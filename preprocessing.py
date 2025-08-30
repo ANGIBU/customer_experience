@@ -295,13 +295,9 @@ class DataPreprocessor:
         
         df_new = df.copy()
         
-        # 기본 수치형 피처만 사용 (순서 고정)
-        base_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
-        available_features = [feat for feat in base_features if feat in df.columns]
-        
         # 미리 정의된 상호작용 쌍 (순서 보장)
         interaction_pairs = [
-            ('age', 'contract_length'),  # 가장 중요한 상호작용을 첫 번째로
+            ('age', 'contract_length'),
             ('frequent', 'tenure')
         ]
         

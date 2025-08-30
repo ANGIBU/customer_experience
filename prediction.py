@@ -19,7 +19,8 @@ class PredictionSystem:
     def __init__(self):
         self.models = {}
         self.feature_engineer = None
-        self.preprocessor = None
+        # 추가 초기화
+        self.feature_info = None
         
     def load_trained_models(self):
         """학습된 모델 로드"""
@@ -42,6 +43,12 @@ class PredictionSystem:
                 print("피처 엔지니어 파일 없음 - 새로 생성")
                 from feature_engineering import FeatureEngineer
                 self.feature_engineer = FeatureEngineer()
+            
+            # 피처 정보 로드
+            self.feature_info = None
+            if os.path.exists('models/feature_info.pkl'):
+                self.feature_info = joblib.load('models/feature_info.pkl')
+                print(f"피처 정보 로드: {self.feature_info['feature_count']}개")
             
             # 모델 파일 목록
             model_files = [
@@ -124,19 +131,35 @@ class PredictionSystem:
         # 전처리 적용
         train_final, test_final = self.preprocessor.process_data(train_processed, test_processed)
         
-        # 모델링용 데이터 준비 (공통 피처만 추출)
-        train_cols = set(train_final.columns)
-        test_cols = set(test_final.columns)
+        # 저장된 피처 정보 사용
+        if self.feature_info and 'feature_names' in self.feature_info:
+            expected_features = self.feature_info['feature_names']
+            print(f"저장된 피처 정보 사용: {len(expected_features)}개")
+            
+            # 누락된 피처를 0으로 채우기
+            for feature in expected_features:
+                if feature not in test_final.columns:
+                    test_final[feature] = 0
+                    print(f"누락 피처 추가: {feature}")
+            
+            # 예상 피처만 선택하고 순서 맞추기
+            available_features = [f for f in expected_features if f in test_final.columns]
+            X_test = test_final[available_features]
+            
+        else:
+            # 기존 방식 (공통 피처 추출)
+            train_cols = set(train_final.columns)
+            test_cols = set(test_final.columns)
+            
+            common_features = list((train_cols & test_cols) - {'ID', 'support_needs'})
+            common_features = sorted(common_features)
+            
+            X_test = test_final[common_features]
         
-        # 공통 피처만 선택
-        common_features = list((train_cols & test_cols) - {'ID', 'support_needs'})
-        common_features = sorted(common_features)  # 순서 보장
-        
-        X_test = test_final[common_features]
         test_ids = test_final['ID']
         
         print(f"테스트 데이터 형태: {X_test.shape}")
-        print(f"피처 수: {len(common_features)}")
+        print(f"피처 수: {X_test.shape[1]}")
         
         return X_test, test_ids
     
@@ -145,14 +168,12 @@ class PredictionSystem:
         print("개별 모델 예측")
         
         predictions = {}
-        feature_names = list(X_test.columns)
         
         for name, model in self.models.items():
             try:
                 if name == 'lightgbm':
                     pred_proba = model.predict(X_test.values)
                     if pred_proba.ndim == 1:
-                        # 이진 분류 결과를 다중 분류로 변환
                         pred_proba_multi = np.zeros((len(pred_proba), 3))
                         pred_proba_multi[:, 1] = pred_proba
                         pred_proba_multi[:, 0] = 1 - pred_proba
@@ -161,8 +182,8 @@ class PredictionSystem:
                     predictions[name] = pred_proba
                     
                 elif name == 'xgboost':
-                    # 피처 이름 맞춤
-                    xgb_test = xgb.DMatrix(X_test.values, feature_names=feature_names)
+                    # XGBoost는 피처 이름에 매우 민감하므로 값만 사용
+                    xgb_test = xgb.DMatrix(X_test.values)
                     pred_proba = model.predict(xgb_test)
                     if pred_proba.ndim == 1:
                         pred_proba_multi = np.zeros((len(pred_proba), 3))
@@ -173,36 +194,42 @@ class PredictionSystem:
                     predictions[name] = pred_proba
                     
                 elif name == 'catboost':
-                    # CatBoost는 피처 이름에 민감하므로 DataFrame 사용
-                    pred_proba = model.predict_proba(X_test)
+                    # CatBoost도 값만 사용
+                    pred_proba = model.predict_proba(X_test.values)
                     predictions[name] = pred_proba
                 
                 elif name == 'stacking':
-                    # LogisticRegression으로 변경되었으므로 predict_proba 사용 가능
-                    if hasattr(model, 'predict_proba'):
-                        pred_proba = model.predict_proba(X_test)
-                        predictions[name] = pred_proba
+                    # Stacking 모델은 기본 모델들의 예측을 입력으로 사용
+                    if len(predictions) >= 2:
+                        # 기존 예측들을 메타 피처로 사용
+                        base_predictions = []
+                        for pred_name, pred_proba in predictions.items():
+                            if pred_name != 'stacking':
+                                base_predictions.append(pred_proba)
+                        
+                        if base_predictions:
+                            meta_features = np.hstack(base_predictions)
+                            
+                            if hasattr(model, 'predict_proba'):
+                                pred_proba = model.predict_proba(meta_features)
+                            else:
+                                pred_class = model.predict(meta_features)
+                                pred_proba = np.zeros((len(pred_class), 3))
+                                for i, cls in enumerate(pred_class):
+                                    pred_proba[i, cls] = 1.0
+                            
+                            predictions[name] = pred_proba
                     else:
-                        # RidgeClassifier인 경우 decision_function 사용
-                        decision_scores = model.decision_function(X_test)
-                        if decision_scores.ndim == 1:
-                            pred_proba = np.zeros((len(decision_scores), 3))
-                            pred_proba[:, 1] = 1 / (1 + np.exp(-decision_scores))
-                            pred_proba[:, 0] = 1 - pred_proba[:, 1]
-                        else:
-                            # Softmax 변환
-                            exp_scores = np.exp(decision_scores - np.max(decision_scores, axis=1, keepdims=True))
-                            pred_proba = exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
-                        predictions[name] = pred_proba
+                        print(f"  {name}: 기본 모델 부족으로 건너뜀")
+                        continue
                     
                 else:
-                    # sklearn 모델들
+                    # sklearn 모델들 - 값만 사용
                     if hasattr(model, 'predict_proba'):
-                        pred_proba = model.predict_proba(X_test)
+                        pred_proba = model.predict_proba(X_test.values)
                         predictions[name] = pred_proba
                     else:
-                        # predict만 가능한 모델
-                        pred_class = model.predict(X_test)
+                        pred_class = model.predict(X_test.values)
                         pred_proba = np.zeros((len(pred_class), 3))
                         for i, cls in enumerate(pred_class):
                             pred_proba[i, cls] = 1.0
