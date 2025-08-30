@@ -3,24 +3,47 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, RobustScaler, QuantileTransformer
-from sklearn.ensemble import IsolationForest
 from sklearn.feature_selection import SelectKBest, mutual_info_classif, VarianceThreshold
+from sklearn.feature_selection import SelectFromModel
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
+from scipy.stats import zscore
 import warnings
 warnings.filterwarnings('ignore')
 
 class DataPreprocessor:
     def __init__(self):
         self.scalers = {}
-        self.outlier_detector = None
         self.feature_selector = None
         self.imputers = {}
         self.selected_features = None
         self.variance_selector = None
         self.feature_order = None
+        self.temporal_cutoff = None
         self.is_fitted = False
         
+    def temporal_data_split(self, train_df):
+        """시간 기반 데이터 분할"""
+        print("시간 기반 분할")
+        
+        if 'temporal_id' not in train_df.columns:
+            return train_df
+        
+        temporal_ids = train_df['temporal_id'].values
+        
+        if self.temporal_cutoff is None:
+            self.temporal_cutoff = np.percentile(temporal_ids, 85)
+        
+        clean_mask = temporal_ids <= self.temporal_cutoff
+        clean_data = train_df[clean_mask].copy()
+        
+        removed_count = len(train_df) - len(clean_data)
+        if removed_count > 0:
+            print(f"시간적 누수 데이터 제거: {removed_count}개")
+        
+        return clean_data
+    
     def handle_missing_values(self, train_df, test_df):
         """결측치 처리"""
         print("결측치 처리")
@@ -28,7 +51,6 @@ class DataPreprocessor:
         train_clean = train_df.copy()
         test_clean = test_df.copy()
         
-        # 공통 수치형 컬럼 찾기
         train_numeric = train_df.select_dtypes(include=[np.number]).columns
         test_numeric = test_df.select_dtypes(include=[np.number]).columns
         
@@ -44,7 +66,6 @@ class DataPreprocessor:
                 
                 test_clean[col] = self.imputers[col].transform(test_clean[[col]]).flatten()
         
-        # 공통 범주형 컬럼 찾기
         train_categorical = train_df.select_dtypes(include=['object']).columns
         test_categorical = test_df.select_dtypes(include=['object']).columns
         
@@ -65,41 +86,41 @@ class DataPreprocessor:
         
         return train_clean, test_clean
     
-    def detect_and_handle_outliers(self, train_df):
-        """이상치 탐지 및 처리"""
+    def robust_outlier_handling(self, train_df):
+        """정밀 이상치 처리"""
         print("이상치 처리")
         
         train_clean = train_df.copy()
         
-        # 수치형 컬럼 선택
         numeric_cols = train_df.select_dtypes(include=[np.number]).columns
         numeric_cols = [col for col in numeric_cols if col not in ['ID', 'support_needs']]
         
-        # IQR 방법으로 이상치 클리핑
         for col in numeric_cols:
             if col in train_df.columns:
-                Q1 = train_df[col].quantile(0.25)
-                Q3 = train_df[col].quantile(0.75)
-                IQR = Q3 - Q1
+                values = train_df[col].dropna()
                 
-                if IQR > 0:
-                    lower_bound = Q1 - 1.5 * IQR
-                    upper_bound = Q3 + 1.5 * IQR
+                if len(values) > 100:
+                    z_scores = np.abs(zscore(values))
+                    outlier_threshold = 3.5
                     
-                    outliers_before = ((train_df[col] < lower_bound) | (train_df[col] > upper_bound)).sum()
+                    outlier_mask = z_scores > outlier_threshold
+                    outlier_count = outlier_mask.sum()
                     
-                    train_clean[col] = np.clip(train_clean[col], lower_bound, upper_bound)
-                    
-                    if outliers_before > 50:  # 너무 많은 로그 방지
-                        print(f"  {col}: {outliers_before}개 이상치 클리핑")
+                    if outlier_count > 0:
+                        q01 = values.quantile(0.01)
+                        q99 = values.quantile(0.99)
+                        
+                        train_clean[col] = np.clip(train_clean[col], q01, q99)
+                        
+                        if outlier_count > 50:
+                            print(f"  {col}: {outlier_count}개 이상치 처리")
         
         return train_clean
     
-    def remove_constant_features(self, train_df, test_df):
-        """상수 피처 제거"""
-        print("상수 피처 제거")
+    def remove_low_variance_features(self, train_df, test_df):
+        """저분산 피처 제거"""
+        print("저분산 피처 제거")
         
-        # 분산 기반 상수 피처 탐지
         numeric_cols = [col for col in train_df.select_dtypes(include=[np.number]).columns 
                        if col not in ['ID', 'support_needs']]
         
@@ -109,27 +130,19 @@ class DataPreprocessor:
         if self.variance_selector is None:
             self.variance_selector = VarianceThreshold(threshold=0.001)
             
-            # 훈련 데이터로 학습
             train_numeric = train_df[numeric_cols].fillna(0)
             self.variance_selector.fit(train_numeric)
         
-        # 선택된 피처 확인
         selected_mask = self.variance_selector.get_support()
         selected_numeric_cols = [col for i, col in enumerate(numeric_cols) if selected_mask[i]]
         removed_cols = [col for i, col in enumerate(numeric_cols) if not selected_mask[i]]
         
         if removed_cols:
-            print(f"제거된 상수 피처: {len(removed_cols)}개")
-            for col in removed_cols[:3]:  # 처음 3개만 출력
-                print(f"  - {col}")
-            if len(removed_cols) > 3:
-                print(f"  ... 외 {len(removed_cols) - 3}개")
+            print(f"제거된 저분산 피처: {len(removed_cols)}개")
         
-        # 상수가 아닌 피처만 유지
         keep_cols_train = ['ID'] + selected_numeric_cols
         keep_cols_test = ['ID'] + selected_numeric_cols
         
-        # 범주형 피처 추가
         categorical_cols = train_df.select_dtypes(include=['object']).columns
         for col in categorical_cols:
             if col != 'ID':
@@ -137,11 +150,9 @@ class DataPreprocessor:
                 if col in test_df.columns:
                     keep_cols_test.append(col)
         
-        # support_needs 추가
         if 'support_needs' in train_df.columns:
             keep_cols_train.append('support_needs')
         
-        # 실제 존재하는 컬럼만 선택
         keep_cols_train = [col for col in keep_cols_train if col in train_df.columns]
         keep_cols_test = [col for col in keep_cols_test if col in test_df.columns]
         
@@ -150,11 +161,10 @@ class DataPreprocessor:
         
         return train_clean, test_clean
     
-    def apply_scaling(self, train_df, test_df):
+    def apply_multi_scaling(self, train_df, test_df):
         """다중 스케일링 적용"""
         print("스케일링 적용")
         
-        # 공통 수치형 컬럼 찾기
         train_numeric = [col for col in train_df.select_dtypes(include=[np.number]).columns 
                         if col not in ['ID', 'support_needs']]
         test_numeric = [col for col in test_df.select_dtypes(include=[np.number]).columns 
@@ -169,7 +179,6 @@ class DataPreprocessor:
             print("공통 수치형 컬럼 없음")
             return train_scaled, test_scaled
         
-        # Standard Scaler
         if 'standard' not in self.scalers:
             self.scalers['standard'] = StandardScaler()
             train_scaled[common_numeric_cols] = self.scalers['standard'].fit_transform(train_df[common_numeric_cols])
@@ -178,7 +187,6 @@ class DataPreprocessor:
         
         test_scaled[common_numeric_cols] = self.scalers['standard'].transform(test_df[common_numeric_cols])
         
-        # Robust Scaler 추가
         if 'robust' not in self.scalers:
             self.scalers['robust'] = RobustScaler()
             train_robust = self.scalers['robust'].fit_transform(train_df[common_numeric_cols])
@@ -191,26 +199,12 @@ class DataPreprocessor:
             train_scaled[f'{col}_robust'] = train_robust[:, i]
             test_scaled[f'{col}_robust'] = test_robust[:, i]
         
-        # Quantile Transformer 추가
-        if 'quantile' not in self.scalers:
-            self.scalers['quantile'] = QuantileTransformer(output_distribution='normal', random_state=42)
-            train_quantile = self.scalers['quantile'].fit_transform(train_df[common_numeric_cols])
-        else:
-            train_quantile = self.scalers['quantile'].transform(train_df[common_numeric_cols])
-        
-        test_quantile = self.scalers['quantile'].transform(test_df[common_numeric_cols])
-        
-        for i, col in enumerate(common_numeric_cols):
-            train_scaled[f'{col}_quantile'] = train_quantile[:, i]
-            test_scaled[f'{col}_quantile'] = test_quantile[:, i]
-        
-        scaling_factor = 3  # standard, robust, quantile
-        print(f"스케일링 완료: {len(common_numeric_cols)} → {len(common_numeric_cols) * scaling_factor} 피처")
+        print(f"스케일링 완료: {len(common_numeric_cols)} → {len(common_numeric_cols) * 2} 피처")
         
         return train_scaled, test_scaled
     
-    def select_best_features(self, train_df, k=60):
-        """최적 피처 선택"""
+    def multi_criteria_feature_selection(self, train_df, k=80):
+        """다기준 피처 선택"""
         print("피처 선택")
         
         if 'support_needs' not in train_df.columns:
@@ -228,23 +222,62 @@ class DataPreprocessor:
         X = train_df[feature_cols]
         y = train_df['support_needs']
         
-        # 결측치와 무한대값 처리
         X = X.fillna(0)
         X = X.replace([np.inf, -np.inf], 0)
         
-        # 상호정보량 기반 피처 선택
-        if self.feature_selector is None:
-            self.feature_selector = SelectKBest(score_func=mutual_info_classif, k=k)
-            X_selected = self.feature_selector.fit_transform(X, y)
+        mi_selector = SelectKBest(score_func=mutual_info_classif, k=min(k+20, len(feature_cols)))
+        X_mi = mi_selector.fit_transform(X, y)
+        mi_selected = mi_selector.get_support()
+        mi_features = [feature_cols[i] for i, selected in enumerate(mi_selected) if selected]
+        
+        rf_selector = SelectFromModel(
+            RandomForestClassifier(n_estimators=50, random_state=42),
+            threshold='median'
+        )
+        rf_selector.fit(X, y)
+        rf_selected = rf_selector.get_support()
+        rf_features = [feature_cols[i] for i, selected in enumerate(rf_selected) if selected]
+        
+        correlation_matrix = X.corr().abs()
+        
+        def remove_correlated_features(features, corr_matrix, threshold=0.9):
+            features_to_remove = set()
             
-            selected_mask = self.feature_selector.get_support()
-            self.selected_features = [feature_cols[i] for i, selected in enumerate(selected_mask) if selected]
+            for i, feat1 in enumerate(features):
+                if feat1 in features_to_remove:
+                    continue
+                    
+                for feat2 in features[i+1:]:
+                    if feat2 in features_to_remove:
+                        continue
+                        
+                    if feat1 in corr_matrix.index and feat2 in corr_matrix.columns:
+                        if corr_matrix.loc[feat1, feat2] > threshold:
+                            mi_score1 = mi_selector.scores_[feature_cols.index(feat1)]
+                            mi_score2 = mi_selector.scores_[feature_cols.index(feat2)]
+                            
+                            if mi_score1 < mi_score2:
+                                features_to_remove.add(feat1)
+                            else:
+                                features_to_remove.add(feat2)
+            
+            return [f for f in features if f not in features_to_remove]
+        
+        combined_features = list(set(mi_features + rf_features))
+        final_features = remove_correlated_features(combined_features, correlation_matrix)
+        
+        if len(final_features) > k:
+            mi_scores_dict = dict(zip(feature_cols, mi_selector.scores_))
+            final_features.sort(key=lambda x: mi_scores_dict.get(x, 0), reverse=True)
+            final_features = final_features[:k]
+        
+        self.selected_features = final_features
         
         print(f"선택된 피처: {len(self.selected_features)}개")
         
-        # 상위 피처 출력
-        if hasattr(self.feature_selector, 'scores_'):
-            feature_scores = list(zip(feature_cols, self.feature_selector.scores_))
+        if hasattr(mi_selector, 'scores_'):
+            feature_scores = [(feat, mi_selector.scores_[i]) for i, feat in enumerate(feature_cols) 
+                             if feat in final_features]
             feature_scores.sort(key=lambda x: x[1], reverse=True)
             
             print("상위 5개 피처:")
@@ -259,13 +292,11 @@ class DataPreprocessor:
         
         issues = []
         
-        # 각 데이터프레임의 수치형 컬럼 개별 선택
         train_numeric = [col for col in train_df.select_dtypes(include=[np.number]).columns 
                         if col not in ['ID', 'support_needs']]
         test_numeric = [col for col in test_df.select_dtypes(include=[np.number]).columns 
                        if col not in ['ID', 'support_needs']]
         
-        # 무한대값 확인
         if train_numeric:
             train_inf = np.isinf(train_df[train_numeric]).sum().sum()
         else:
@@ -279,7 +310,6 @@ class DataPreprocessor:
         if train_inf > 0 or test_inf > 0:
             issues.append(f"무한대값 - 훈련: {train_inf}, 테스트: {test_inf}")
         
-        # 결측치 확인
         train_null = train_df.isnull().sum().sum()
         test_null = test_df.isnull().sum().sum()
         
@@ -295,33 +325,34 @@ class DataPreprocessor:
         
         return len(issues) == 0, issues
     
-    def create_feature_interactions(self, df):
-        """피처 상호작용 생성"""
-        print("피처 상호작용 생성")
-        
+    def create_class_specific_features(self, df):
+        """클래스별 특화 피처 생성"""
         df_new = df.copy()
         
-        # 미리 정의된 상호작용 쌍 (순서 보장)
-        interaction_pairs = [
-            ('age', 'contract_length'),
-            ('frequent', 'tenure')
-        ]
+        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        available_cols = [col for col in numeric_cols if col in df.columns]
         
-        for feat1, feat2 in interaction_pairs:
-            if feat1 in df.columns and feat2 in df.columns:
-                df_new[f'{feat1}_{feat2}_interaction'] = df_new[feat1] * df_new[feat2]
-        
-        # 플래그 피처 (순서 고정)
-        if 'age' in df.columns:
-            df_new['age_senior'] = (df_new['age'] >= 60).astype(int)
-            df_new['age_young'] = (df_new['age'] <= 25).astype(int)
-        
-        if 'contract_length' in df.columns:
-            df_new['long_contract'] = (df_new['contract_length'] >= 365).astype(int)
-            df_new['short_contract'] = (df_new['contract_length'] <= 30).astype(int)
-        
-        created_count = len([col for col in df_new.columns if col not in df.columns])
-        print(f"생성된 상호작용 피처: {created_count}개")
+        if len(available_cols) >= 2:
+            class_0_pattern = (
+                (df_new['age'].fillna(40) > 30) & 
+                (df_new['tenure'].fillna(100) > 60) & 
+                (df_new['frequent'].fillna(10) < 20)
+            ).astype(int)
+            df_new['class_0_pattern'] = class_0_pattern
+            
+            class_1_pattern = (
+                (df_new['payment_interval'].fillna(30) > 60) &
+                (df_new['frequent'].fillna(10) < 10) &
+                (df_new['age'].fillna(40) < 40)
+            ).astype(int)
+            df_new['class_1_pattern'] = class_1_pattern
+            
+            class_2_pattern = (
+                (df_new['contract_length'].fillna(90) > 180) &
+                (df_new['frequent'].fillna(10) > 15) &
+                (df_new['age'].fillna(40) > 35)
+            ).astype(int)
+            df_new['class_2_pattern'] = class_2_pattern
         
         return df_new
     
@@ -330,28 +361,23 @@ class DataPreprocessor:
         if self.selected_features is None:
             return train_df, test_df
         
-        # 피처 순서 고정 (첫 번째 실행시에만)
         if self.feature_order is None and not self.is_fitted:
             self.feature_order = sorted(self.selected_features)
             self.is_fitted = True
         
-        # 기존 피처 순서 사용
         if self.feature_order is not None:
-            # 누락된 피처를 0으로 추가
             for col in self.feature_order:
                 if col not in train_df.columns:
                     train_df[col] = 0
                 if col not in test_df.columns:
                     test_df[col] = 0
             
-            # ID와 타겟 처리
             train_cols = ['ID'] + self.feature_order
             if 'support_needs' in train_df.columns:
                 train_cols.append('support_needs')
             
             test_cols = ['ID'] + self.feature_order
             
-            # 존재하는 컬럼만 선택
             train_cols = [col for col in train_cols if col in train_df.columns]
             test_cols = [col for col in test_cols if col in test_df.columns]
             
@@ -364,32 +390,26 @@ class DataPreprocessor:
         print("데이터 전처리 시작")
         print("=" * 40)
         
-        # 1. 결측치 처리
+        train_df = self.temporal_data_split(train_df)
+        
         train_df, test_df = self.handle_missing_values(train_df, test_df)
         
-        # 2. 이상치 처리 (훈련 데이터만)
-        train_df = self.detect_and_handle_outliers(train_df)
+        train_df = self.robust_outlier_handling(train_df)
         
-        # 3. 상수 피처 제거
-        train_df, test_df = self.remove_constant_features(train_df, test_df)
+        train_df, test_df = self.remove_low_variance_features(train_df, test_df)
         
-        # 4. 피처 상호작용 생성
-        train_df = self.create_feature_interactions(train_df)
-        test_df = self.create_feature_interactions(test_df)
+        train_df = self.create_class_specific_features(train_df)
+        test_df = self.create_class_specific_features(test_df)
         
-        # 5. 스케일링
-        train_df, test_df = self.apply_scaling(train_df, test_df)
+        train_df, test_df = self.apply_multi_scaling(train_df, test_df)
         
-        # 6. 피처 선택
         if 'support_needs' in train_df.columns:
-            selected_features = self.select_best_features(train_df, k=60)
+            selected_features = self.multi_criteria_feature_selection(train_df, k=80)
             
-            # 일관된 피처 구조 보장
             train_df, test_df = self.ensure_consistent_features(train_df, test_df)
             
             print(f"최종 사용 피처: {len(self.selected_features)}개")
         
-        # 7. 품질 검증
         quality_ok, issues = self.validate_data_quality(train_df, test_df)
         
         print(f"\n전처리 완료:")
@@ -399,25 +419,21 @@ class DataPreprocessor:
         
         return train_df, test_df
     
-    def prepare_data(self, train_df, test_df, test_size=0.25):
+    def prepare_data(self, train_df, test_df, test_size=0.2):
         """모델링용 데이터 준비"""
         print("모델링 데이터 준비")
         
-        # 안전하게 피처 컬럼 선택
         train_cols = set(train_df.columns)
         test_cols = set(test_df.columns)
         
-        # 공통 피처 컬럼
         common_features = list((train_cols & test_cols) - {'ID', 'support_needs'})
         
         if not common_features:
             raise ValueError("공통 피처가 없습니다")
         
-        # support_needs 컬럼 확인
         if 'support_needs' not in train_df.columns:
             raise ValueError("훈련 데이터에 support_needs 컬럼이 없습니다")
         
-        # 컬럼 순서 정렬 (일관성 보장)
         common_features = sorted(common_features)
         
         X = train_df[common_features]
@@ -425,19 +441,26 @@ class DataPreprocessor:
         X_test = test_df[common_features]
         test_ids = test_df['ID']
         
-        # 무한대값과 결측치 제거
         X = X.fillna(0).replace([np.inf, -np.inf], 0)
         X_test = X_test.fillna(0).replace([np.inf, -np.inf], 0)
         
-        # 시간 기반 분할
-        train_size = int(len(X) * (1 - test_size))
+        if 'temporal_id' in train_df.columns:
+            temporal_ids = train_df['temporal_id'].values
+            cutoff_idx = int(len(temporal_ids) * (1 - test_size))
+            sorted_indices = np.argsort(temporal_ids)
+            
+            train_indices = sorted_indices[:cutoff_idx]
+            val_indices = sorted_indices[cutoff_idx:]
+            
+            X_train = X.iloc[train_indices]
+            X_val = X.iloc[val_indices]
+            y_train = y.iloc[train_indices]
+            y_val = y.iloc[val_indices]
+        else:
+            X_train, X_val, y_train, y_val = train_test_split(
+                X, y, test_size=test_size, random_state=42, stratify=y
+            )
         
-        X_train = X.iloc[:train_size]
-        X_val = X.iloc[train_size:]
-        y_train = y.iloc[:train_size]
-        y_val = y.iloc[train_size:]
-        
-        # 피처 순서 저장
         self.feature_order = common_features
         
         print(f"훈련: {X_train.shape}")

@@ -29,6 +29,81 @@ class DataAnalyzer:
             print(f"데이터 로드 오류: {e}")
             return None, None
     
+    def analyze_temporal_order(self):
+        """시간적 순서 분석"""
+        print("시간적 순서 분석")
+        
+        def extract_id_numbers(id_series):
+            numbers = []
+            for id_val in id_series:
+                try:
+                    if '_' in str(id_val):
+                        num = int(str(id_val).split('_')[1])
+                        numbers.append(num)
+                except:
+                    continue
+            return numbers
+        
+        train_id_nums = extract_id_numbers(self.train_df['ID'])
+        test_id_nums = extract_id_numbers(self.test_df['ID'])
+        
+        if train_id_nums and test_id_nums:
+            train_range = [min(train_id_nums), max(train_id_nums)]
+            test_range = [min(test_id_nums), max(test_id_nums)]
+            
+            print(f"훈련 ID 범위: {train_range}")
+            print(f"테스트 ID 범위: {test_range}")
+            
+            temporal_overlap = train_range[1] >= test_range[0]
+            overlap_ratio = 0
+            
+            if temporal_overlap:
+                overlap_count = len([x for x in train_id_nums if x >= test_range[0]])
+                overlap_ratio = overlap_count / len(train_id_nums)
+                print(f"시간적 겹침: {overlap_ratio:.3f}")
+            
+            return {
+                'train_range': train_range,
+                'test_range': test_range,
+                'temporal_overlap': temporal_overlap,
+                'overlap_ratio': overlap_ratio
+            }
+        
+        return {}
+    
+    def analyze_class_patterns(self):
+        """클래스별 패턴 분석"""
+        print("클래스별 패턴 분석")
+        
+        if 'support_needs' not in self.train_df.columns:
+            return {}
+        
+        class_patterns = {}
+        
+        for cls in [0, 1, 2]:
+            class_data = self.train_df[self.train_df['support_needs'] == cls]
+            
+            if len(class_data) > 0:
+                patterns = {}
+                
+                numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+                for col in numeric_cols:
+                    if col in class_data.columns:
+                        patterns[col] = {
+                            'mean': class_data[col].mean(),
+                            'median': class_data[col].median(),
+                            'std': class_data[col].std()
+                        }
+                
+                categorical_cols = ['gender', 'subscription_type']
+                for col in categorical_cols:
+                    if col in class_data.columns:
+                        patterns[col] = class_data[col].value_counts(normalize=True).to_dict()
+                
+                class_patterns[cls] = patterns
+        
+        return class_patterns
+    
     def analyze_target(self):
         """타겟 변수 분석"""
         print("타겟 분포 분석")
@@ -66,7 +141,6 @@ class DataAnalyzer:
         numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 
                        'contract_length', 'after_interaction']
         
-        # 실제 존재하는 컬럼만 선택
         available_cols = [col for col in numeric_cols if col in self.train_df.columns]
         
         feature_stats = {}
@@ -110,7 +184,6 @@ class DataAnalyzer:
             numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 
                            'contract_length', 'after_interaction']
             
-            # 실제 존재하는 컬럼만 선택
             available_cols = [col for col in numeric_cols + categorical_cols 
                              if col in train_encoded.columns]
             
@@ -137,7 +210,6 @@ class DataAnalyzer:
         numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 
                        'contract_length', 'after_interaction']
         
-        # 공통 컬럼만 선택
         common_cols = [col for col in numeric_cols 
                       if col in self.train_df.columns and col in self.test_df.columns]
         
@@ -182,7 +254,6 @@ class DataAnalyzer:
         numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 
                        'contract_length', 'after_interaction']
         
-        # 실제 존재하는 컬럼만 선택
         available_cols = [col for col in numeric_cols if col in self.train_df.columns]
         
         outlier_counts = {}
@@ -244,7 +315,6 @@ class DataAnalyzer:
             X = train_encoded[feature_cols]
             y = train_encoded['support_needs']
             
-            # 결측치 처리
             X = X.fillna(0)
             
             mi_scores = mutual_info_classif(X, y, random_state=42)
@@ -269,7 +339,6 @@ class DataAnalyzer:
         issues = []
         
         try:
-            # ID 중복 확인
             if 'ID' in self.train_df.columns and 'ID' in self.test_df.columns:
                 train_ids = set(self.train_df['ID'])
                 test_ids = set(self.test_df['ID'])
@@ -278,153 +347,150 @@ class DataAnalyzer:
                 if common_ids:
                     issues.append(f"공통 ID {len(common_ids)}개")
             
-            # 시간적 순서 확인
-            if 'ID' in self.train_df.columns and 'ID' in self.test_df.columns:
-                try:
-                    train_id_nums = []
-                    test_id_nums = []
-                    
-                    for train_id in self.train_df['ID']:
-                        if '_' in str(train_id):
-                            train_id_nums.append(int(str(train_id).split('_')[1]))
-                    
-                    for test_id in self.test_df['ID']:
-                        if '_' in str(test_id):
-                            test_id_nums.append(int(str(test_id).split('_')[1]))
-                    
-                    if train_id_nums and test_id_nums:
-                        train_max = max(train_id_nums)
-                        test_min = min(test_id_nums)
-                        
-                        if train_max >= test_min:
-                            issues.append("시간적 순서 위반")
-                            
-                except Exception as e:
-                    print(f"ID 시간 순서 분석 오류: {e}")
+            temporal_analysis = self.analyze_temporal_order()
+            if temporal_analysis.get('temporal_overlap', False):
+                overlap_ratio = temporal_analysis.get('overlap_ratio', 0)
+                if overlap_ratio > 0.1:
+                    issues.append(f"시간적 순서 위반: 겹침 비율 {overlap_ratio:.1%}")
             
-            # after_interaction 피처 누수 위험
             if 'after_interaction' in self.train_df.columns and 'support_needs' in self.train_df.columns:
                 try:
-                    after_corr = self.train_df[['after_interaction', 'support_needs']].corr().iloc[0, 1]
-                    if abs(after_corr) > 0.3:
-                        issues.append(f"after_interaction 높은 상관관계: {after_corr:.3f}")
-                except Exception as e:
-                    print(f"상관관계 분석 오류: {e}")
-            
+                    correlation = self.train_df[['after_interaction', 'support_needs']].corr().iloc[0, 1]
+                    if abs(correlation) > 0.05:
+                        issues.append(f"after_interaction 상관관계: {correlation:.3f}")
+                except:
+                    pass
+        
             self.analysis_results['leakage'] = issues
             
             if issues:
-                print("누수 위험 발견:")
-                for issue in issues:
-                    print(f"  - {issue}")
-            else:
-                print("누수 위험 없음")
-            
-            return len(issues) == 0
-            
-        except Exception as e:
-            print(f"누수 확인 오류: {e}")
-            return True
-    
-    def generate_insights(self):
-        """분석 결과 요약"""
-        print("\n분석 결과 요약")
-        print("=" * 30)
-        
-        try:
-            target_info = self.analysis_results.get('target', {})
-            imbalance = target_info.get('imbalance_ratio', 0)
-            
-            if imbalance > 2:
-                print(f"클래스 불균형 심각: {imbalance:.1f}")
-            
-            shifts = self.analysis_results.get('distribution_shifts', {})
-            high_shift_features = [feat for feat, info in shifts.items() 
-                                  if info.get('mean_shift', 0) > 5]
-            
-            if high_shift_features:
-                print(f"분포 변화 피처: {high_shift_features}")
-            
-            leakage_issues = self.analysis_results.get('leakage', [])
-            if leakage_issues:
-                print(f"데이터 누수 위험: {len(leakage_issues)}개")
-            
-            importance = self.analysis_results.get('importance', {})
-            if importance:
-                top_features = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:3]
-                
-                print("핵심 피처:")
-                for feat, score in top_features:
-                    print(f"  {feat}: {score:.3f}")
-                    
-        except Exception as e:
-            print(f"인사이트 생성 오류: {e}")
-    
-    def validate_data_structure(self):
-        """데이터 구조 검증"""
-        print("데이터 구조 검증")
-        
-        issues = []
-        
-        try:
-            # 필수 컬럼 확인
-            required_train_cols = ['ID', 'age', 'gender', 'subscription_type', 
-                                 'tenure', 'frequent', 'payment_interval', 
-                                 'contract_length', 'after_interaction', 'support_needs']
-            
-            required_test_cols = ['ID', 'age', 'gender', 'subscription_type', 
-                                'tenure', 'frequent', 'payment_interval', 
-                                'contract_length', 'after_interaction']
-            
-            missing_train = [col for col in required_train_cols if col not in self.train_df.columns]
-            missing_test = [col for col in required_test_cols if col not in self.test_df.columns]
-            
-            if missing_train:
-                issues.append(f"훈련 데이터 누락 컬럼: {missing_train}")
-            
-            if missing_test:
-                issues.append(f"테스트 데이터 누락 컬럼: {missing_test}")
-            
-            # 데이터 타입 확인
-            if 'support_needs' in self.train_df.columns:
-                if self.train_df['support_needs'].dtype not in ['int64', 'int32']:
-                    issues.append("support_needs가 정수형이 아님")
-                
-                # 타겟 값 범위 확인
-                unique_targets = set(self.train_df['support_needs'].unique())
-                expected_targets = {0, 1, 2}
-                
-                if not unique_targets.issubset(expected_targets):
-                    issues.append(f"잘못된 타겟 값: {unique_targets - expected_targets}")
-            
-            if issues:
-                print("구조 문제:")
+                print("누수 위험:")
                 for issue in issues:
                     print(f"  - {issue}")
                 return False
             else:
-                print("데이터 구조 정상")
+                print("누수 위험 없음")
                 return True
                 
         except Exception as e:
-            print(f"구조 검증 오류: {e}")
-            return False
+            print(f"누수 확인 오류: {e}")
+            return True
+    
+    def calculate_feature_stability(self):
+        """피처 안정성 계산"""
+        print("피처 안정성 분석")
+        
+        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        common_cols = [col for col in numeric_cols 
+                      if col in self.train_df.columns and col in self.test_df.columns]
+        
+        stability_scores = {}
+        
+        for col in common_cols:
+            try:
+                train_vals = self.train_df[col].dropna()
+                test_vals = self.test_df[col].dropna()
+                
+                if len(train_vals) > 100 and len(test_vals) > 100:
+                    from scipy.stats import ks_2samp
+                    statistic, p_value = ks_2samp(train_vals, test_vals)
+                    
+                    stability_score = 1 - statistic
+                    stability_scores[col] = {
+                        'ks_statistic': statistic,
+                        'p_value': p_value,
+                        'stability_score': stability_score
+                    }
+                    
+                    if stability_score < 0.95:
+                        print(f"  {col}: 안정성 {stability_score:.3f}")
+                        
+            except Exception as e:
+                print(f"  {col} 안정성 분석 오류: {e}")
+                continue
+        
+        return stability_scores
+    
+    def analyze_class_separability(self):
+        """클래스 분리도 분석"""
+        print("클래스 분리도 분석")
+        
+        if 'support_needs' not in self.train_df.columns:
+            return {}
+        
+        separability = {}
+        
+        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        available_cols = [col for col in numeric_cols if col in self.train_df.columns]
+        
+        for col in available_cols:
+            try:
+                class_groups = []
+                for cls in [0, 1, 2]:
+                    class_data = self.train_df[self.train_df['support_needs'] == cls][col]
+                    class_groups.append(class_data.dropna())
+                
+                if all(len(group) > 10 for group in class_groups):
+                    from scipy.stats import f_oneway
+                    f_stat, p_val = f_oneway(*class_groups)
+                    
+                    separability[col] = {
+                        'f_statistic': f_stat,
+                        'p_value': p_val,
+                        'separable': p_val < 0.05
+                    }
+                    
+                    if p_val < 0.01:
+                        print(f"  {col}: 높은 분리도 (p={p_val:.4f})")
+                        
+            except Exception as e:
+                print(f"  {col} 분리도 분석 오류: {e}")
+                continue
+        
+        return separability
+    
+    def detect_feature_interactions(self):
+        """피처 상호작용 탐지"""
+        print("피처 상호작용 탐지")
+        
+        if 'support_needs' not in self.train_df.columns:
+            return {}
+        
+        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        available_cols = [col for col in numeric_cols if col in self.train_df.columns]
+        
+        interactions = {}
+        
+        for i, col1 in enumerate(available_cols):
+            for col2 in available_cols[i+1:]:
+                try:
+                    interaction_col = self.train_df[col1] * self.train_df[col2]
+                    
+                    correlation = np.corrcoef(interaction_col.fillna(0), self.train_df['support_needs'])[0, 1]
+                    
+                    if abs(correlation) > 0.1:
+                        interactions[f"{col1}_{col2}"] = {
+                            'correlation': correlation,
+                            'significant': abs(correlation) > 0.15
+                        }
+                        
+                        if abs(correlation) > 0.15:
+                            print(f"  {col1} × {col2}: 상관관계 {correlation:.3f}")
+                            
+                except Exception as e:
+                    continue
+        
+        return interactions
     
     def run_analysis(self):
         """전체 분석 실행"""
         print("데이터 분석 시작")
         print("=" * 40)
         
-        # 데이터 로드
         if self.load_data() is None:
             print("데이터 로드 실패")
             return {}
         
-        # 데이터 구조 검증
-        if not self.validate_data_structure():
-            print("데이터 구조 문제 발견")
-        
-        # 개별 분석 수행 (오류가 있어도 계속 진행)
         try:
             self.analyze_target()
         except Exception as e:
@@ -461,9 +527,28 @@ class DataAnalyzer:
             print(f"누수 확인 실패: {e}")
         
         try:
-            self.generate_insights()
+            class_patterns = self.analyze_class_patterns()
+            self.analysis_results['class_patterns'] = class_patterns
         except Exception as e:
-            print(f"인사이트 생성 실패: {e}")
+            print(f"클래스 패턴 분석 실패: {e}")
+        
+        try:
+            stability = self.calculate_feature_stability()
+            self.analysis_results['stability'] = stability
+        except Exception as e:
+            print(f"안정성 분석 실패: {e}")
+        
+        try:
+            separability = self.analyze_class_separability()
+            self.analysis_results['separability'] = separability
+        except Exception as e:
+            print(f"분리도 분석 실패: {e}")
+        
+        try:
+            interactions = self.detect_feature_interactions()
+            self.analysis_results['interactions'] = interactions
+        except Exception as e:
+            print(f"상호작용 분석 실패: {e}")
         
         print("데이터 분석 완료")
         return self.analysis_results
