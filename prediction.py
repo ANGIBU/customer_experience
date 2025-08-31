@@ -268,34 +268,60 @@ class PredictionSystem:
         """클래스별 특화 앙상블"""
         print("클래스별 앙상블 예측")
         
-        class_weights = {
-            0: {'lightgbm': 0.45, 'xgboost': 0.35, 'catboost': 0.20},
-            1: {'class1_specialist': 0.40, 'neural_network': 0.30, 'lightgbm': 0.30},
-            2: {'catboost': 0.40, 'lightgbm': 0.35, 'xgboost': 0.25}
+        available_models = list(predictions.keys())
+        print(f"사용 가능한 모델: {available_models}")
+        
+        weights = {
+            'lightgbm': 0.30,
+            'xgboost': 0.25,
+            'catboost': 0.20,
+            'rf_calibrated': 0.15,
+            'random_forest': 0.10
         }
         
-        ensemble_proba = np.zeros((len(list(predictions.values())[0]), 3))
+        normalized_weights = {}
+        total_weight = 0
         
-        for cls in range(3):
-            cls_weights = class_weights[cls]
-            total_weight = 0
-            
-            for model_name, weight in cls_weights.items():
-                if model_name in predictions:
-                    if model_name == 'class1_specialist':
-                        if isinstance(predictions[model_name], np.ndarray) and predictions[model_name].ndim == 1:
-                            ensemble_proba[:, cls] += weight * predictions[model_name]
-                        else:
-                            ensemble_proba[:, cls] += weight * predictions[model_name][:, 1]
-                    else:
-                        ensemble_proba[:, cls] += weight * predictions[model_name][:, cls]
-                    total_weight += weight
-            
-            if total_weight > 0:
-                ensemble_proba[:, cls] /= total_weight
+        for model_name in available_models:
+            if model_name in weights:
+                normalized_weights[model_name] = weights[model_name]
+                total_weight += weights[model_name]
+            else:
+                normalized_weights[model_name] = 0.05
+                total_weight += 0.05
+        
+        for model_name in normalized_weights:
+            normalized_weights[model_name] /= total_weight
+        
+        print("모델별 가중치:")
+        for name, weight in normalized_weights.items():
+            print(f"  {name}: {weight:.2f}")
+        
+        first_pred = list(predictions.values())[0]
+        if isinstance(first_pred, np.ndarray):
+            if first_pred.ndim == 2:
+                ensemble_proba = np.zeros((first_pred.shape[0], 3))
+            else:
+                ensemble_proba = np.zeros((len(first_pred), 3))
+        else:
+            ensemble_proba = np.zeros((len(first_pred), 3))
+        
+        for model_name, pred in predictions.items():
+            if model_name in normalized_weights:
+                weight = normalized_weights[model_name]
+                
+                if model_name == 'class1_specialist':
+                    if isinstance(pred, np.ndarray) and pred.ndim == 1:
+                        ensemble_proba[:, 1] += weight * pred
+                    elif isinstance(pred, np.ndarray) and pred.shape[1] >= 2:
+                        ensemble_proba[:, 1] += weight * pred[:, 1]
+                else:
+                    if isinstance(pred, np.ndarray) and pred.ndim == 2 and pred.shape[1] == 3:
+                        ensemble_proba += weight * pred
         
         row_sums = ensemble_proba.sum(axis=1, keepdims=True)
-        ensemble_proba = np.where(row_sums > 0, ensemble_proba / row_sums, ensemble_proba)
+        ensemble_proba = np.where(row_sums > 0, ensemble_proba / row_sums, 
+                                 np.array([0.463, 0.269, 0.268])[np.newaxis, :])
         
         return ensemble_proba
     
@@ -359,7 +385,8 @@ class PredictionSystem:
         print("분포 정합")
         
         pred_classes = np.argmax(pred_proba, axis=1)
-        current_dist = np.bincount(pred_classes, minlength=3) / len(pred_classes)
+        current_dist = np.bincount(pred_classes, minlength=3)
+        current_dist = current_dist / current_dist.sum()
         
         target_distribution = np.array([0.463, 0.269, 0.268])
         
@@ -372,30 +399,27 @@ class PredictionSystem:
         adjusted_proba = pred_proba.copy()
         
         for cls in range(3):
-            current_count = current_dist[cls]
-            target_count = target_distribution[cls]
+            current_ratio = current_dist[cls]
+            target_ratio = target_distribution[cls]
             
-            if current_count > 0:
-                ratio = target_count / current_count
+            if current_ratio > 0 and target_ratio > 0:
+                adjustment_factor = target_ratio / current_ratio
                 
-                if ratio < 0.85:
-                    cls_mask = pred_classes == cls
-                    adjusted_proba[cls_mask, cls] *= 0.75
-                elif ratio > 1.15:
-                    cls_mask = pred_classes == cls
-                    adjusted_proba[cls_mask, cls] *= 1.25
+                if adjustment_factor > 1.2:
+                    top_percentile = np.percentile(pred_proba[:, cls], 70)
+                    boost_mask = pred_proba[:, cls] > top_percentile
+                    adjusted_proba[boost_mask, cls] *= 1.3
                     
-                    top_candidates = pred_proba[:, cls] > np.percentile(pred_proba[:, cls], 80)
-                    change_mask = top_candidates & (pred_classes != cls)
-                    
-                    if change_mask.sum() > 0:
-                        adjusted_proba[change_mask, cls] *= 1.2
-                        for other_cls in range(3):
-                            if other_cls != cls:
-                                adjusted_proba[change_mask, other_cls] *= 0.85
+                elif adjustment_factor < 0.8:
+                    bottom_percentile = np.percentile(pred_proba[:, cls], 80)
+                    reduce_mask = pred_proba[:, cls] < bottom_percentile
+                    adjusted_proba[reduce_mask, cls] *= 0.7
         
-        row_sums = adjusted_proba.sum(axis=1, keepdims=True)
-        adjusted_proba = np.where(row_sums > 0, adjusted_proba / row_sums, adjusted_proba)
+        for i in range(len(adjusted_proba)):
+            if adjusted_proba[i].sum() > 0:
+                adjusted_proba[i] = adjusted_proba[i] / adjusted_proba[i].sum()
+            else:
+                adjusted_proba[i] = target_distribution
         
         return adjusted_proba
     
@@ -407,9 +431,40 @@ class PredictionSystem:
         
         optimized_proba = self.optimize_class_thresholds(calibrated_proba)
         
-        balanced_proba = self.apply_distribution_matching(optimized_proba)
+        pred_classes_before = np.argmax(optimized_proba, axis=1)
+        current_dist_before = np.bincount(pred_classes_before, minlength=3) / len(pred_classes_before)
         
-        final_predictions = np.argmax(balanced_proba, axis=1)
+        target_distribution = np.array([0.463, 0.269, 0.268])
+        n_samples = len(optimized_proba)
+        target_counts = (target_distribution * n_samples).astype(int)
+        
+        sorted_indices = []
+        for cls in range(3):
+            class_proba_with_idx = [(i, optimized_proba[i, cls]) for i in range(n_samples)]
+            class_proba_with_idx.sort(key=lambda x: x[1], reverse=True)
+            sorted_indices.append(class_proba_with_idx)
+        
+        final_predictions = np.zeros(n_samples, dtype=int)
+        assigned = np.zeros(n_samples, dtype=bool)
+        
+        for cls in range(3):
+            count = 0
+            for idx, prob in sorted_indices[cls]:
+                if not assigned[idx] and count < target_counts[cls]:
+                    final_predictions[idx] = cls
+                    assigned[idx] = True
+                    count += 1
+        
+        remaining_indices = np.where(~assigned)[0]
+        if len(remaining_indices) > 0:
+            for idx in remaining_indices:
+                final_predictions[idx] = np.argmax(optimized_proba[idx])
+        
+        balanced_proba = np.zeros_like(optimized_proba)
+        for i in range(n_samples):
+            balanced_proba[i] = optimized_proba[i]
+            balanced_proba[i, final_predictions[i]] *= 1.1
+            balanced_proba[i] = balanced_proba[i] / balanced_proba[i].sum()
         
         return final_predictions, balanced_proba
     

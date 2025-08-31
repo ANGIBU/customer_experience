@@ -156,6 +156,9 @@ class ModelTrainer:
         """CatBoost 수정 학습"""
         print("CatBoost 학습")
         
+        X_train_clean = X_train.fillna(0).replace([np.inf, -np.inf], 0)
+        X_val_clean = X_val.fillna(0).replace([np.inf, -np.inf], 0)
+        
         model = CatBoostClassifier(
             iterations=2000,
             learning_rate=0.03,
@@ -171,8 +174,8 @@ class ModelTrainer:
         )
         
         model.fit(
-            X_train.values, y_train,
-            eval_set=(X_val.values, y_val),
+            X_train_clean.values, y_train,
+            eval_set=(X_val_clean.values, y_val),
             use_best_model=True,
             verbose=False
         )
@@ -278,7 +281,6 @@ class ModelTrainer:
         
         model = lgb.LGBMClassifier(
             objective='binary',
-            metric='binary_logloss',
             boosting_type='gbdt',
             num_leaves=31,
             learning_rate=0.05,
@@ -288,17 +290,16 @@ class ModelTrainer:
             min_child_weight=10,
             reg_alpha=0.1,
             reg_lambda=0.1,
-            scale_pos_weight=2.7,
             random_state=42,
             n_estimators=1000,
-            early_stopping_rounds=50,
-            verbose=-1
+            force_col_wise=True
         )
         
         model.fit(
             X_train, y_binary_train,
             eval_set=[(X_val, y_binary_val)],
-            verbose=False
+            eval_metric='binary_logloss',
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
         )
         
         y_pred_binary = model.predict(X_val)
