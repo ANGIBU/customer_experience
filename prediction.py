@@ -46,8 +46,8 @@ class PredictionSystem:
         
         return X_clean
         
-    def load_trained_models(self):
-        """학습된 모델 로드"""
+    def load_trained_models_fixed(self):
+        """수정된 학습된 모델 로드"""
         print("학습된 모델 로드")
         
         try:
@@ -76,8 +76,7 @@ class PredictionSystem:
             model_files = [
                 ('lightgbm', 'models/lightgbm_model.txt', 'lgb'),
                 ('xgboost', 'models/xgboost_model.json', 'xgb'),
-                ('catboost', 'models/catboost_model.cbm', 'cat'),
-                ('catboost_pkl', 'models/catboost_model.pkl', 'cat_pkl'),
+                ('catboost', 'models/catboost_model.pkl', 'pkl'),
                 ('random_forest', 'models/random_forest_model.pkl', 'pkl'),
                 ('extra_trees', 'models/extra_trees_model.pkl', 'pkl'),
                 ('neural_network', 'models/neural_network_model.pkl', 'pkl'),
@@ -97,24 +96,16 @@ class PredictionSystem:
                             model = xgb.Booster()
                             model.load_model(filepath)
                             self.models[name] = model
-                        elif model_type == 'cat':
-                            model = CatBoostClassifier()
-                            model.load_model(filepath)
-                            self.models['catboost'] = model
-                        elif model_type == 'cat_pkl':
-                            model = joblib.load(filepath)
-                            self.models['catboost'] = model
                         else:
                             self.models[name] = joblib.load(filepath)
                         
                         loaded_count += 1
-                        model_name = 'catboost' if 'catboost' in name else name
-                        print(f"  {model_name} 로드 완료")
+                        print(f"  {name} 로드 완료")
+                        
                     except Exception as e:
                         print(f"  {name} 로드 실패: {e}")
                 else:
-                    if 'catboost' not in name:
-                        print(f"  {name} 파일 없음: {filepath}")
+                    print(f"  {name} 파일 없음: {filepath}")
             
             if loaded_count == 0:
                 print("모델 파일이 없어 새로 학습합니다")
@@ -201,8 +192,8 @@ class PredictionSystem:
         
         return X_test, test_ids
     
-    def predict_individual_models(self, X_test):
-        """개별 모델 예측"""
+    def predict_individual_models_fixed(self, X_test):
+        """수정된 개별 모델 예측"""
         print("개별 모델 예측")
         
         predictions = {}
@@ -237,20 +228,39 @@ class PredictionSystem:
                     
                 elif name == 'catboost':
                     try:
-                        pred_proba = model.predict_proba(X_test_clean)
+                        if hasattr(model, 'predict_proba'):
+                            pred_proba = model.predict_proba(X_test_clean)
+                        else:
+                            pred_class = model.predict(X_test_clean)
+                            pred_proba = np.zeros((len(pred_class), 3))
+                            for i, cls in enumerate(pred_class):
+                                if 0 <= cls <= 2:
+                                    pred_proba[i, cls] = 1.0
+                                else:
+                                    pred_proba[i] = [0.463, 0.269, 0.268]
+                        
                         if pred_proba.shape[1] == 3:
                             predictions[name] = pred_proba
                         else:
                             print(f"  {name}: 잘못된 출력 차원 {pred_proba.shape}")
+                            continue
+                            
                     except Exception as cat_e:
-                        print(f"  {name} CatBoost 예측 오류: {cat_e}")
+                        print(f"  {name} 예측 오류: {cat_e}")
                         continue
                     
                 elif name == 'class1_specialist':
-                    pred_binary = model.predict_proba(X_test_clean)
-                    if pred_binary.shape[1] == 2:
-                        class1_proba = pred_binary[:, 1]
-                        predictions[name] = class1_proba
+                    if hasattr(model, 'predict_proba'):
+                        pred_binary = model.predict_proba(X_test_clean)
+                        if pred_binary.shape[1] == 2:
+                            class1_proba = pred_binary[:, 1]
+                            predictions[name] = class1_proba
+                        else:
+                            pred_class = model.predict(X_test_clean)
+                            predictions[name] = (pred_class == 1).astype(float)
+                    else:
+                        pred_class = model.predict(X_test_clean)
+                        predictions[name] = (pred_class == 1).astype(float)
                     
                 elif name == 'stacking':
                     base_models = ['lightgbm', 'xgboost', 'catboost', 'random_forest']
@@ -259,28 +269,35 @@ class PredictionSystem:
                     if len(valid_base_models) >= 2:
                         base_predictions = []
                         for base_name in valid_base_models:
-                            base_predictions.append(predictions[base_name])
-                        
-                        meta_features = np.hstack(base_predictions)
-                        
-                        expected_features = model.n_features_in_ if hasattr(model, 'n_features_in_') else None
-                        
-                        if expected_features is not None and meta_features.shape[1] != expected_features:
-                            print(f"  {name}: 피처 크기 불일치 - 건너뜀")
-                            continue
-                        
-                        if hasattr(model, 'predict_proba'):
-                            pred_proba = model.predict_proba(meta_features)
-                            predictions[name] = pred_proba
-                        else:
-                            pred_class = model.predict(meta_features)
-                            pred_proba = np.zeros((len(pred_class), 3))
-                            for i, cls in enumerate(pred_class):
-                                if 0 <= cls <= 2:
-                                    pred_proba[i, cls] = 1.0
+                            if base_name in predictions:
+                                base_pred = predictions[base_name]
+                                if base_pred.ndim == 2 and base_pred.shape[1] == 3:
+                                    base_predictions.append(base_pred)
                                 else:
-                                    pred_proba[i] = [0.463, 0.269, 0.268]
-                            predictions[name] = pred_proba
+                                    print(f"  스태킹: {base_name} 피처 형태 오류")
+                        
+                        if len(base_predictions) >= 2:
+                            meta_features = np.hstack(base_predictions)
+                            
+                            try:
+                                if hasattr(model, 'predict_proba'):
+                                    pred_proba = model.predict_proba(meta_features)
+                                    predictions[name] = pred_proba
+                                else:
+                                    pred_class = model.predict(meta_features)
+                                    pred_proba = np.zeros((len(pred_class), 3))
+                                    for i, cls in enumerate(pred_class):
+                                        if 0 <= cls <= 2:
+                                            pred_proba[i, cls] = 1.0
+                                        else:
+                                            pred_proba[i] = [0.463, 0.269, 0.268]
+                                    predictions[name] = pred_proba
+                            except Exception as stack_e:
+                                print(f"  스태킹 예측 오류: {stack_e}")
+                                continue
+                        else:
+                            print(f"  {name}: 기본 모델 부족으로 건너뜀")
+                            continue
                     else:
                         print(f"  {name}: 기본 모델 부족으로 건너뜀")
                         continue
@@ -311,24 +328,24 @@ class PredictionSystem:
         
         return predictions
     
-    def class_specific_ensemble(self, predictions):
-        """클래스별 특화 앙상블"""
+    def class_specific_ensemble_fixed(self, predictions):
+        """수정된 클래스별 특화 앙상블"""
         print("클래스별 앙상블 예측")
         
         available_models = list(predictions.keys())
         print(f"사용 가능한 모델: {available_models}")
         
         weights = {
-            'lightgbm': 0.29,
-            'xgboost': 0.24,
+            'lightgbm': 0.30,
+            'xgboost': 0.25,
             'catboost': 0.15,
-            'rf_calibrated': 0.14,
-            'random_forest': 0.10,
+            'rf_calibrated': 0.12,
+            'random_forest': 0.08,
             'extra_trees': 0.05,
             'neural_network': 0.05,
-            'class1_specialist': 0.05,
+            'class1_specialist': 0.08,
             'svm_calibrated': 0.05,
-            'stacking': 0.05
+            'stacking': 0.02
         }
         
         normalized_weights = {}
@@ -339,8 +356,8 @@ class PredictionSystem:
                 normalized_weights[model_name] = weights[model_name]
                 total_weight += weights[model_name]
             else:
-                normalized_weights[model_name] = 0.05
-                total_weight += 0.05
+                normalized_weights[model_name] = 0.03
+                total_weight += 0.03
         
         if total_weight > 0:
             for model_name in normalized_weights:
@@ -348,7 +365,7 @@ class PredictionSystem:
         
         print("모델별 가중치:")
         for name, weight in normalized_weights.items():
-            print(f"  {name}: {weight:.2f}")
+            print(f"  {name}: {weight:.3f}")
         
         first_pred = list(predictions.values())[0]
         if isinstance(first_pred, np.ndarray):
@@ -585,9 +602,9 @@ class PredictionSystem:
             for col in categorical_cols:
                 if col in train_df.columns and col in test_df.columns:
                     combined = pd.concat([train_df[col], test_df[col]])
-                    le.fit(combined)
-                    train_processed[col] = le.transform(train_df[col])
-                    test_processed[col] = le.transform(test_df[col])
+                    le.fit(combined.fillna('Unknown'))
+                    train_processed[col] = le.transform(train_df[col].fillna('Unknown'))
+                    test_processed[col] = le.transform(test_df[col].fillna('Unknown'))
             
             feature_cols = numeric_cols + categorical_cols
             feature_cols = [col for col in feature_cols if col in train_processed.columns and col in test_processed.columns]
@@ -674,7 +691,7 @@ class PredictionSystem:
         print("예측 시스템 시작")
         print("=" * 40)
         
-        if not self.load_trained_models():
+        if not self.load_trained_models_fixed():
             print("모델 로드 실패")
             
         try:
@@ -687,10 +704,10 @@ class PredictionSystem:
         
         if self.models:
             try:
-                individual_predictions = self.predict_individual_models(X_test)
+                individual_predictions = self.predict_individual_models_fixed(X_test)
                 
                 if individual_predictions and len(individual_predictions) > 0:
-                    ensemble_proba = self.class_specific_ensemble(individual_predictions)
+                    ensemble_proba = self.class_specific_ensemble_fixed(individual_predictions)
                     
                     final_predictions, final_proba = self.post_process_predictions(ensemble_proba)
                     

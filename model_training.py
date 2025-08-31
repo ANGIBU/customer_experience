@@ -361,8 +361,8 @@ class ModelTrainer:
         self.models['class1_specialist'] = model
         return model, accuracy
     
-    def create_stacking_model(self, X_train, y_train, X_val, y_val):
-        """스태킹 모델 생성"""
+    def create_stacking_model_fixed(self, X_train, y_train, X_val, y_val):
+        """수정된 스태킹 모델 생성"""
         print("스태킹 모델 생성")
         
         base_models = ['lightgbm', 'xgboost', 'catboost', 'random_forest']
@@ -377,24 +377,30 @@ class ModelTrainer:
             X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
             
             skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-            meta_features_train = []
-            meta_features_val = []
             
-            for fold, (train_idx, oof_idx) in enumerate(skf.split(X_train_clean, y_train_clean)):
-                X_fold_train = X_train_clean[train_idx]
-                y_fold_train = y_train_clean[train_idx]
-                X_fold_oof = X_train_clean[oof_idx]
+            meta_features_train = np.zeros((len(X_train_clean), len(valid_models) * 3))
+            meta_features_val = np.zeros((len(X_val_clean), len(valid_models) * 3))
+            
+            for model_idx, model_name in enumerate(valid_models):
+                print(f"  스태킹용 {model_name} 학습")
                 
-                fold_predictions = []
-                val_fold_predictions = []
+                oof_predictions = np.zeros((len(X_train_clean), 3))
+                val_predictions = np.zeros((len(X_val_clean), 3))
                 
-                for model_name in valid_models:
+                for fold, (train_idx, oof_idx) in enumerate(skf.split(X_train_clean, y_train_clean)):
+                    X_fold_train = X_train_clean[train_idx]
+                    y_fold_train = y_train_clean[train_idx]
+                    X_fold_oof = X_train_clean[oof_idx]
+                    
                     try:
                         if model_name == 'lightgbm':
                             lgb_params = {
-                                'objective': 'multiclass', 'num_class': 3, 
-                                'verbose': -1, 'random_state': 42,
-                                'num_leaves': 31, 'learning_rate': 0.05
+                                'objective': 'multiclass', 
+                                'num_class': 3, 
+                                'verbose': -1, 
+                                'random_state': 42 + fold,
+                                'num_leaves': 31, 
+                                'learning_rate': 0.05
                             }
                             train_data = lgb.Dataset(X_fold_train, label=y_fold_train)
                             fold_model = lgb.train(lgb_params, train_data, num_boost_round=200)
@@ -403,8 +409,12 @@ class ModelTrainer:
                             
                         elif model_name == 'xgboost':
                             xgb_params = {
-                                'objective': 'multi:softprob', 'num_class': 3,
-                                'random_state': 42, 'verbosity': 0
+                                'objective': 'multi:softprob', 
+                                'num_class': 3,
+                                'random_state': 42 + fold, 
+                                'verbosity': 0,
+                                'max_depth': 6,
+                                'learning_rate': 0.05
                             }
                             train_data = xgb.DMatrix(X_fold_train, label=y_fold_train)
                             fold_model = xgb.train(xgb_params, train_data, num_boost_round=200)
@@ -412,12 +422,10 @@ class ModelTrainer:
                             val_pred = fold_model.predict(xgb.DMatrix(X_val_clean))
                             
                         elif model_name == 'catboost':
-                            class_weights_list = [self.class_weights.get(i, 1.0) for i in range(3)]
                             fold_model = CatBoostClassifier(
                                 iterations=200, 
-                                random_seed=42, 
+                                random_seed=42 + fold, 
                                 verbose=0,
-                                class_weights=class_weights_list,
                                 task_type='CPU'
                             )
                             fold_model.fit(X_fold_train, y_fold_train, verbose=False)
@@ -426,7 +434,9 @@ class ModelTrainer:
                             
                         elif model_name == 'random_forest':
                             fold_model = RandomForestClassifier(
-                                n_estimators=200, random_state=42, n_jobs=-1,
+                                n_estimators=200, 
+                                random_state=42 + fold, 
+                                n_jobs=-1,
                                 class_weight=self.class_weights
                             )
                             fold_model.fit(X_fold_train, y_fold_train)
@@ -436,66 +446,44 @@ class ModelTrainer:
                         else:
                             continue
                         
-                        if fold == 0:
-                            fold_predictions.append(oof_pred)
-                            val_fold_predictions.append(val_pred)
-                        else:
-                            fold_predictions.append(oof_pred)
-                            val_fold_predictions.append(val_pred)
+                        oof_predictions[oof_idx] = oof_pred
+                        val_predictions += val_pred / skf.n_splits
                         
                     except Exception as e:
-                        print(f"폴드 {fold} {model_name} 오류: {e}")
+                        print(f"    폴드 {fold} {model_name} 오류: {e}")
+                        oof_predictions[oof_idx] = np.array([[0.463, 0.269, 0.268]] * len(oof_idx))
+                        val_predictions += np.array([[0.463, 0.269, 0.268]] * len(X_val_clean)) / skf.n_splits
                         continue
                 
-                if fold == 0:
-                    if fold_predictions:
-                        meta_features_train = [np.zeros((len(X_train_clean), pred.shape[1])) for pred in fold_predictions]
-                        meta_features_val = [np.zeros((len(X_val_clean), pred.shape[1])) for pred in val_fold_predictions]
-                
-                for i, pred in enumerate(fold_predictions):
-                    if i < len(meta_features_train):
-                        train_start = len(train_idx) * fold // 3
-                        train_end = train_start + len(oof_idx)
-                        if train_end <= len(meta_features_train[i]):
-                            try:
-                                oof_start = fold * len(oof_idx) // 3
-                                oof_end = oof_start + len(oof_idx)
-                                if oof_end <= len(meta_features_train[i]):
-                                    meta_features_train[i][oof_start:oof_end] = pred
-                            except:
-                                pass
-                
-                for i, pred in enumerate(val_fold_predictions):
-                    if i < len(meta_features_val):
-                        meta_features_val[i] += pred / skf.n_splits
+                start_col = model_idx * 3
+                end_col = start_col + 3
+                meta_features_train[:, start_col:end_col] = oof_predictions
+                meta_features_val[:, start_col:end_col] = val_predictions
             
-            if meta_features_train and meta_features_val:
-                meta_train = np.hstack(meta_features_train)
-                meta_val = np.hstack(meta_features_val)
-                
-                self.meta_model = LogisticRegression(
-                    multi_class='multinomial',
-                    solver='lbfgs',
-                    random_state=42,
-                    max_iter=2000,
-                    class_weight=self.class_weights,
-                    C=0.5
-                )
-                
-                self.meta_model.fit(meta_train, y_train_clean)
-                
-                stacking_pred_proba = self.meta_model.predict_proba(meta_val)
-                stacking_pred = np.argmax(stacking_pred_proba, axis=1)
-                stacking_accuracy = accuracy_score(y_val_clean, stacking_pred)
-                
-                print(f"스태킹 검증 정확도: {stacking_accuracy:.4f}")
-                print(f"메타 피처 수: {meta_train.shape[1]}")
-                
-                self.models['stacking'] = self.meta_model
-                return self.meta_model, stacking_accuracy
-            else:
-                print("스태킹 메타 피처 생성 실패")
+            if np.all(meta_features_train == 0):
+                print("메타 피처 생성 실패")
                 return None, 0.0
+            
+            self.meta_model = LogisticRegression(
+                multi_class='multinomial',
+                solver='lbfgs',
+                random_state=42,
+                max_iter=2000,
+                class_weight=self.class_weights,
+                C=1.0
+            )
+            
+            self.meta_model.fit(meta_features_train, y_train_clean)
+            
+            stacking_pred_proba = self.meta_model.predict_proba(meta_features_val)
+            stacking_pred = np.argmax(stacking_pred_proba, axis=1)
+            stacking_accuracy = accuracy_score(y_val_clean, stacking_pred)
+            
+            print(f"스태킹 검증 정확도: {stacking_accuracy:.4f}")
+            print(f"메타 피처 수: {meta_features_train.shape[1]}")
+            
+            self.models['stacking'] = self.meta_model
+            return self.meta_model, stacking_accuracy
             
         except Exception as e:
             print(f"스태킹 모델 생성 오류: {e}")
@@ -621,8 +609,8 @@ class ModelTrainer:
         
         return mean_score, std_score
     
-    def save_all_models(self, engineer, preprocessor, X_train):
-        """모든 모델 저장"""
+    def save_all_models_fixed(self, engineer, preprocessor, X_train):
+        """수정된 모델 저장"""
         print("모델 저장")
         
         os.makedirs('models', exist_ok=True)
@@ -646,25 +634,27 @@ class ModelTrainer:
             try:
                 if name == 'lightgbm':
                     model.save_model(f'models/{name}_model.txt')
+                    saved_count += 1
+                    print(f"  {name} 모델 저장 완료")
+                    
                 elif name == 'xgboost':
                     model.save_model(f'models/{name}_model.json')
+                    saved_count += 1
+                    print(f"  {name} 모델 저장 완료")
+                    
                 elif name == 'catboost':
                     try:
-                        model.save_model(f'models/{name}_model.cbm')
-                        print(f"  {name} 모델 저장 완료 (CBM 형식)")
+                        joblib.dump(model, f'models/{name}_model.pkl')
+                        saved_count += 1
+                        print(f"  {name} 모델 저장 완료")
                     except Exception as cat_save_error:
-                        print(f"  {name} CBM 저장 실패: {cat_save_error}")
-                        try:
-                            joblib.dump(model, f'models/{name}_model.pkl')
-                            print(f"  {name} 모델 저장 완료 (PKL 형식)")
-                        except Exception as pkl_save_error:
-                            print(f"  {name} PKL 저장도 실패: {pkl_save_error}")
-                            continue
+                        print(f"  {name} 저장 실패: {cat_save_error}")
+                        continue
+                        
                 else:
                     joblib.dump(model, f'models/{name}_model.pkl')
-                
-                saved_count += 1
-                print(f"  {name} 모델 저장 완료")
+                    saved_count += 1
+                    print(f"  {name} 모델 저장 완료")
                 
             except Exception as e:
                 print(f"  {name} 모델 저장 오류: {e}")
@@ -755,7 +745,7 @@ class ModelTrainer:
             print(f"보정 모델 생성 실패: {e}")
         
         try:
-            stacking_model, stacking_acc = self.create_stacking_model(X_train, y_train, X_val, y_val)
+            stacking_model, stacking_acc = self.create_stacking_model_fixed(X_train, y_train, X_val, y_val)
             if stacking_model is not None:
                 model_results['stacking'] = stacking_acc
         except Exception as e:
@@ -769,7 +759,7 @@ class ModelTrainer:
             if 'lightgbm' in self.models:
                 self.perform_temporal_cv(full_X, full_y, 'lightgbm')
         
-        self.save_all_models(engineer, preprocessor, X_train)
+        self.save_all_models_fixed(engineer, preprocessor, X_train)
         
         print("\n모델 성능 요약:")
         for model_name, accuracy in model_results.items():
