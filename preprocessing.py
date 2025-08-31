@@ -334,11 +334,14 @@ class DataPreprocessor:
         """데이터 품질 검증"""
         issues = []
         
-        # 무한값 확인
-        numeric_cols = train_df.select_dtypes(include=[np.number]).columns
+        # 훈련 데이터 수치형 컬럼
+        train_numeric_cols = train_df.select_dtypes(include=[np.number]).columns
+        # 테스트 데이터 수치형 컬럼
+        test_numeric_cols = test_df.select_dtypes(include=[np.number]).columns
         
-        train_inf = np.isinf(train_df[numeric_cols]).sum().sum()
-        test_inf = np.isinf(test_df[numeric_cols]).sum().sum()
+        # 무한값 확인
+        train_inf = np.isinf(train_df[train_numeric_cols]).sum().sum()
+        test_inf = np.isinf(test_df[test_numeric_cols]).sum().sum()
         
         if train_inf > 0:
             issues.append(f"train_infinite_values: {train_inf}")
@@ -346,8 +349,8 @@ class DataPreprocessor:
             issues.append(f"test_infinite_values: {test_inf}")
         
         # 결측치 확인
-        train_nan = train_df[numeric_cols].isnull().sum().sum()
-        test_nan = test_df[numeric_cols].isnull().sum().sum()
+        train_nan = train_df[train_numeric_cols].isnull().sum().sum()
+        test_nan = test_df[test_numeric_cols].isnull().sum().sum()
         
         if train_nan > 0:
             issues.append(f"train_missing_values: {train_nan}")
@@ -360,9 +363,10 @@ class DataPreprocessor:
             if invalid_count > 0:
                 issues.append(f"invalid_targets: {invalid_count}")
         
-        # 피처 값 범위 확인
-        for col in numeric_cols:
-            if col in train_df.columns and col in test_df.columns:
+        # 공통 피처 값 범위 확인
+        common_numeric_cols = set(train_numeric_cols) & set(test_numeric_cols)
+        for col in common_numeric_cols:
+            if col != 'support_needs':
                 train_range = train_df[col].max() - train_df[col].min()
                 test_range = test_df[col].max() - test_df[col].min()
                 
@@ -410,6 +414,9 @@ class DataPreprocessor:
     
     def prepare_data_temporal_advanced(self, train_df, test_df, val_size=0.20, gap_size=0.05):
         """시간 기반 데이터 준비"""
+        if train_df is None or test_df is None:
+            return None, None, None, None, None, None
+            
         if 'support_needs' not in train_df.columns:
             # 타겟이 없는 경우 기본 분할
             feature_cols = [col for col in train_df.columns if col not in ['ID']]
@@ -420,8 +427,10 @@ class DataPreprocessor:
                 
             X_train = train_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
             X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
-            test_ids = test_df['ID']
+            test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
             
+            # 더미 분할
+            from sklearn.model_selection import train_test_split
             X_train_split, X_val_split, y_dummy, y_val_dummy = train_test_split(
                 X_train, np.zeros(len(X_train)), test_size=val_size, random_state=42
             )
@@ -441,11 +450,11 @@ class DataPreprocessor:
         X = train_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
         y = np.clip(train_df['support_needs'], 0, 2)
         X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
-        test_ids = test_df['ID']
+        test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
         
         # 시간 기반 분할 with Gap
-        if 'temporal_id' in train_df.columns:
-            temporal_ids = train_df['temporal_id'].values
+        if 'temporal_id' in X.columns:
+            temporal_ids = X['temporal_id'].values
             sorted_indices = np.argsort(temporal_ids)
             
             total_samples = len(sorted_indices)
@@ -453,18 +462,24 @@ class DataPreprocessor:
             val_samples = int(total_samples * val_size)
             train_samples = total_samples - val_samples - gap_samples
             
-            # 훈련-갭-검증 순서로 분할
-            train_indices = sorted_indices[:train_samples]
-            gap_indices = sorted_indices[train_samples:train_samples + gap_samples]  # 사용하지 않음
-            val_indices = sorted_indices[train_samples + gap_samples:]
-            
-            X_train = X.iloc[train_indices]
-            X_val = X.iloc[val_indices]
-            y_train = y.iloc[train_indices]
-            y_val = y.iloc[val_indices]
-            
+            if train_samples < 1000 or val_samples < 500:
+                # 데이터 부족시 계층화 분할
+                from sklearn.model_selection import train_test_split
+                X_train, X_val, y_train, y_val = train_test_split(
+                    X, y, test_size=val_size, random_state=42, stratify=y
+                )
+            else:
+                # 훈련-갭-검증 순서로 분할
+                train_indices = sorted_indices[:train_samples]
+                val_indices = sorted_indices[train_samples + gap_samples:]
+                
+                X_train = X.iloc[train_indices]
+                X_val = X.iloc[val_indices]
+                y_train = y.iloc[train_indices]
+                y_val = y.iloc[val_indices]
         else:
             # 계층화 분할
+            from sklearn.model_selection import train_test_split
             X_train, X_val, y_train, y_val = train_test_split(
                 X, y, test_size=val_size, random_state=42, stratify=y
             )
@@ -472,17 +487,25 @@ class DataPreprocessor:
         return X_train, X_val, y_train, y_val, X_test, test_ids
 
 def main():
-    train_df = pd.read_csv('train.csv')
-    test_df = pd.read_csv('test.csv')
-    
-    preprocessor = DataPreprocessor()
-    train_processed, test_processed = preprocessor.process_data(train_df, test_df)
-    
-    X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_advanced(
-        train_processed, test_processed
-    )
-    
-    return preprocessor, X_train, X_val, y_train, y_val, X_test, test_ids
+    try:
+        train_df = pd.read_csv('train.csv')
+        test_df = pd.read_csv('test.csv')
+        
+        preprocessor = DataPreprocessor()
+        train_processed, test_processed = preprocessor.process_data(train_df, test_df)
+        
+        if train_processed is not None and test_processed is not None:
+            X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_advanced(
+                train_processed, test_processed
+            )
+            
+            return preprocessor, X_train, X_val, y_train, y_val, X_test, test_ids
+        else:
+            return preprocessor, None, None, None, None, None, None
+            
+    except Exception as e:
+        print(f"전처리 오류: {e}")
+        return None, None, None, None, None, None, None
 
 if __name__ == "__main__":
     main()

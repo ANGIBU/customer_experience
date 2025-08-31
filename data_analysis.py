@@ -358,9 +358,20 @@ class DataAnalyzer:
         return self.analysis_results
 
 def main():
-    analyzer = DataAnalyzer()
-    results = analyzer.run_analysis()
-    return analyzer, results
+    try:
+        analyzer = DataAnalyzer()
+        results = analyzer.run_analysis()
+        
+        if results:
+            print("데이터 분석 완료")
+            return analyzer, results
+        else:
+            print("데이터 분석 실패")
+            return None, {}
+            
+    except Exception as e:
+        print(f"데이터 분석 오류: {e}")
+        return None, {}
 
 if __name__ == "__main__":
     main()

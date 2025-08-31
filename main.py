@@ -699,4 +699,4 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    exit_code = main()  
+    exit_code = main()

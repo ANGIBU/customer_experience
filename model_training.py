@@ -71,30 +71,48 @@ class ModelTrainer:
     
     def prepare_training_data(self):
         """훈련 데이터 준비"""
-        train_df = pd.read_csv('train.csv')
-        test_df = pd.read_csv('test.csv')
-        
-        # 데이터 분석으로부터 temporal_threshold 가져오기
-        from data_analysis import DataAnalyzer
-        analyzer = DataAnalyzer()
-        analysis_results = analyzer.run_analysis()
-        temporal_threshold = analysis_results.get('temporal', {}).get('temporal_threshold')
-        
-        engineer = FeatureEngineer()
-        train_df, test_df = engineer.create_features(train_df, test_df, temporal_threshold)
-        
-        preprocessor = DataPreprocessor()
-        temporal_info = analysis_results.get('temporal')
-        train_df, test_df = preprocessor.process_data(train_df, test_df, temporal_info)
-        
-        X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_advanced(
-            train_df, test_df, val_size=0.18, gap_size=0.03
-        )
-        
-        self.feature_names = list(X_train.columns)
-        self.calculate_class_weights_optimal(y_train)
-        
-        return X_train, X_val, y_train, y_val, X_test, test_ids, engineer, preprocessor
+        try:
+            train_df = pd.read_csv('train.csv')
+            test_df = pd.read_csv('test.csv')
+            
+            # 데이터 분석으로부터 temporal_threshold 가져오기
+            try:
+                from data_analysis import DataAnalyzer
+                analyzer = DataAnalyzer()
+                analysis_results = analyzer.run_analysis()
+                temporal_threshold = analysis_results.get('temporal', {}).get('temporal_threshold')
+                temporal_info = analysis_results.get('temporal')
+            except Exception:
+                temporal_threshold = None
+                temporal_info = None
+            
+            engineer = FeatureEngineer()
+            train_df, test_df = engineer.create_features(train_df, test_df, temporal_threshold)
+            
+            if train_df is None or test_df is None:
+                raise ValueError("피처 생성 실패")
+            
+            preprocessor = DataPreprocessor()
+            train_df, test_df = preprocessor.process_data(train_df, test_df, temporal_info)
+            
+            if train_df is None or test_df is None:
+                raise ValueError("전처리 실패")
+            
+            X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_advanced(
+                train_df, test_df, val_size=0.18, gap_size=0.03
+            )
+            
+            if X_train is None or X_val is None:
+                raise ValueError("데이터 분할 실패")
+            
+            self.feature_names = list(X_train.columns)
+            self.calculate_class_weights_optimal(y_train)
+            
+            return X_train, X_val, y_train, y_val, X_test, test_ids, engineer, preprocessor
+            
+        except Exception as e:
+            print(f"훈련 데이터 준비 오류: {e}")
+            return None, None, None, None, None, None, None, None
     
     def apply_resampling_combined(self, X_train, y_train):
         """결합된 리샘플링 기법"""
@@ -626,11 +644,21 @@ class ModelTrainer:
             best_model = max(valid_results.items(), key=lambda x: x[1])
 
 def main():
-    trainer = ModelTrainer()
-    X_train, X_val, y_train, y_val, X_test, test_ids, engineer, preprocessor = trainer.prepare_training_data()
-    trainer.train_models(X_train, X_val, y_train, y_val, engineer, preprocessor)
-    
-    return trainer
+    try:
+        trainer = ModelTrainer()
+        result = trainer.prepare_training_data()
+        
+        if result[0] is not None:  # X_train이 None이 아니면
+            X_train, X_val, y_train, y_val, X_test, test_ids, engineer, preprocessor = result
+            trainer.train_models(X_train, X_val, y_train, y_val, engineer, preprocessor)
+            return trainer
+        else:
+            print("훈련 데이터 준비 실패")
+            return None
+            
+    except Exception as e:
+        print(f"모델 훈련 오류: {e}")
+        return None
 
 if __name__ == "__main__":
     main()
