@@ -5,6 +5,7 @@ import numpy as np
 from sklearn.preprocessing import LabelEncoder
 from sklearn.feature_selection import mutual_info_classif
 from scipy import stats
+from scipy.stats import ks_2samp, chi2_contingency
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -56,383 +57,390 @@ class DataAnalyzer:
             print(f"테스트 ID 범위: {test_range}")
             
             # 시간적 분할점 계산
-            all_ids = sorted(train_id_nums + test_id_nums)
             self.temporal_cutoff = max(test_id_nums)
-            
             print(f"시간적 분할점: {self.temporal_cutoff}")
             
             # 누수 위험 계산
-            temporal_overlap = any(tid <= self.temporal_cutoff for tid in train_id_nums)
+            overlap_count = sum(1 for tid in train_id_nums if tid <= self.temporal_cutoff)
+            overlap_ratio = overlap_count / len(train_id_nums)
             
-            if temporal_overlap:
-                overlap_count = sum(1 for tid in train_id_nums if tid <= self.temporal_cutoff)
-                overlap_ratio = overlap_count / len(train_id_nums)
-                print(f"시간적 겹침 비율: {overlap_ratio:.3f}")
-                
-                return {
-                    'train_range': train_range,
-                    'test_range': test_range,
-                    'temporal_cutoff': self.temporal_cutoff,
-                    'temporal_overlap': temporal_overlap,
-                    'overlap_ratio': overlap_ratio,
-                    'safe_train_mask': [tid > self.temporal_cutoff for tid in train_id_nums]
-                }
+            print(f"시간적 겹침 비율: {overlap_ratio:.3f}")
+            
+            return {
+                'train_range': train_range,
+                'test_range': test_range,
+                'temporal_cutoff': self.temporal_cutoff,
+                'overlap_ratio': overlap_ratio,
+                'safe_train_indices': [i for i, tid in enumerate(train_id_nums) if tid > self.temporal_cutoff]
+            }
             
         return {}
     
-    def analyze_feature_patterns(self):
-        """피처 패턴 분석"""
-        print("피처 패턴 분석")
-        
-        if 'support_needs' not in self.train_df.columns:
-            return {}
-        
-        patterns = {}
-        
-        # 수치형 피처 분석
-        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
-        
-        for feature in numeric_features:
-            if feature in self.train_df.columns:
-                feature_data = self.train_df[feature].dropna()
-                
-                patterns[feature] = {
-                    'mean': feature_data.mean(),
-                    'std': feature_data.std(),
-                    'median': feature_data.median(),
-                    'q25': feature_data.quantile(0.25),
-                    'q75': feature_data.quantile(0.75),
-                    'skewness': feature_data.skew(),
-                    'kurtosis': feature_data.kurtosis(),
-                    'outlier_ratio': self.calculate_outlier_ratio(feature_data)
-                }
-        
-        # 범주형 피처 분석
-        categorical_features = ['gender', 'subscription_type']
-        
-        for feature in categorical_features:
-            if feature in self.train_df.columns:
-                value_counts = self.train_df[feature].value_counts()
-                patterns[feature] = {
-                    'categories': value_counts.index.tolist(),
-                    'frequencies': value_counts.values.tolist(),
-                    'entropy': self.calculate_entropy(value_counts.values)
-                }
-        
-        return patterns
-    
-    def calculate_outlier_ratio(self, data):
-        """이상치 비율 계산"""
-        Q1 = data.quantile(0.25)
-        Q3 = data.quantile(0.75)
-        IQR = Q3 - Q1
-        
-        if IQR > 0:
-            lower = Q1 - 1.5 * IQR
-            upper = Q3 + 1.5 * IQR
-            outliers = ((data < lower) | (data > upper)).sum()
-            return outliers / len(data)
-        
-        return 0.0
-    
-    def calculate_entropy(self, frequencies):
-        """엔트로피 계산"""
-        frequencies = np.array(frequencies)
-        probabilities = frequencies / frequencies.sum()
-        probabilities = probabilities[probabilities > 0]
-        
-        if len(probabilities) <= 1:
-            return 0.0
-        
-        return -np.sum(probabilities * np.log2(probabilities))
-    
-    def analyze_class_relationships(self):
-        """클래스 관계 분석"""
-        print("클래스 관계 분석")
-        
-        if 'support_needs' not in self.train_df.columns:
-            return {}
-        
-        class_relationships = {}
-        
-        # 수치형 피처별 클래스 분리도
-        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
-        
-        for feature in numeric_features:
-            if feature in self.train_df.columns:
-                class_groups = []
-                class_stats = {}
-                
-                for cls in [0, 1, 2]:
-                    class_data = self.train_df[self.train_df['support_needs'] == cls][feature].dropna()
-                    class_groups.append(class_data)
-                    
-                    if len(class_data) > 0:
-                        class_stats[cls] = {
-                            'mean': class_data.mean(),
-                            'std': class_data.std(),
-                            'median': class_data.median()
-                        }
-                
-                # ANOVA F-통계량 계산
-                if all(len(group) > 10 for group in class_groups):
-                    try:
-                        f_stat, p_val = stats.f_oneway(*class_groups)
-                        class_relationships[feature] = {
-                            'f_statistic': f_stat,
-                            'p_value': p_val,
-                            'class_stats': class_stats,
-                            'separability': p_val < 0.01
-                        }
-                    except:
-                        pass
-        
-        return class_relationships
-    
-    def detect_leakage_features(self):
-        """누수 피처 탐지"""
-        print("누수 피처 탐지")
-        
-        if 'support_needs' not in self.train_df.columns:
-            return {}
+    def detect_target_leakage(self):
+        """타겟 누수 탐지"""
+        print("타겟 누수 탐지")
         
         leakage_features = {}
         
-        # after_interaction 피처 분석
-        if 'after_interaction' in self.train_df.columns:
+        if 'after_interaction' in self.train_df.columns and 'support_needs' in self.train_df.columns:
+            # 클래스별 평균 계산
             class_means = {}
-            
             for cls in [0, 1, 2]:
                 class_data = self.train_df[self.train_df['support_needs'] == cls]['after_interaction'].dropna()
                 if len(class_data) > 0:
                     class_means[cls] = class_data.mean()
             
+            # 상관관계 계산
+            correlation = self.train_df[['after_interaction', 'support_needs']].corr().iloc[0, 1]
+            
+            # 상호정보량 계산
+            after_clean = self.train_df['after_interaction'].fillna(0)
+            target_clean = self.train_df['support_needs']
+            
+            mi_score = mutual_info_classif(after_clean.values.reshape(-1, 1), target_clean, random_state=42)[0]
+            
+            # 클래스 분리도 측정
             if len(class_means) >= 2:
                 mean_values = list(class_means.values())
                 max_diff = max(mean_values) - min(mean_values)
                 
-                # 상관관계 계산
-                correlation = self.train_df[['after_interaction', 'support_needs']].corr().iloc[0, 1]
-                
                 leakage_features['after_interaction'] = {
-                    'class_means': class_means,
-                    'max_difference': max_diff,
                     'correlation': correlation,
-                    'leakage_risk': max_diff > 1.0 or abs(correlation) > 0.05
+                    'mutual_info': mi_score,
+                    'class_separation': max_diff,
+                    'is_leakage': abs(correlation) > 0.1 or mi_score > 0.5 or max_diff > 2.0
                 }
                 
-                if max_diff > 1.0:
-                    print(f"after_interaction 누수 위험: 클래스 간 차이 {max_diff:.3f}")
+                print(f"after_interaction 상관관계: {correlation:.4f}")
+                print(f"after_interaction 상호정보량: {mi_score:.4f}")
+                print(f"after_interaction 클래스 분리도: {max_diff:.4f}")
+                
+                if leakage_features['after_interaction']['is_leakage']:
+                    print("경고: after_interaction 피처 누수 위험 탐지")
         
         return leakage_features
     
-    def analyze_feature_importance_safe(self):
-        """안전한 피처 중요도 분석"""
-        print("피처 중요도 분석")
+    def analyze_feature_distributions(self):
+        """피처 분포 분석"""
+        print("피처 분포 분석")
         
-        if 'support_needs' not in self.train_df.columns:
-            return {}
+        distribution_analysis = {}
+        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         
-        try:
-            # after_interaction 제외한 피처들만 사용
-            safe_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
-            
-            # 범주형 변수 인코딩
-            train_encoded = self.train_df.copy()
-            le = LabelEncoder()
-            
-            categorical_cols = ['gender', 'subscription_type']
-            for col in categorical_cols:
-                if col in train_encoded.columns:
-                    train_encoded[col] = le.fit_transform(train_encoded[col].fillna('Unknown'))
-                    safe_features.append(col)
-            
-            # 사용 가능한 피처만 선택
-            available_features = [f for f in safe_features if f in train_encoded.columns]
-            
-            if not available_features:
-                return {}
-            
-            X = train_encoded[available_features].fillna(0)
-            y = train_encoded['support_needs']
-            
-            # 상호정보량 계산
-            mi_scores = mutual_info_classif(X, y, random_state=42)
-            importance_dict = dict(zip(available_features, mi_scores))
-            
-            # 정렬
-            importance_sorted = sorted(importance_dict.items(), key=lambda x: x[1], reverse=True)
-            
-            print("피처 중요도 (상호정보량):")
-            for feature, score in importance_sorted:
-                print(f"  {feature}: {score:.4f}")
-            
-            return importance_dict
-            
-        except Exception as e:
-            print(f"중요도 분석 오류: {e}")
-            return {}
-    
-    def validate_data_integrity(self):
-        """데이터 무결성 검증"""
-        print("데이터 무결성 검증")
-        
-        integrity_issues = []
-        
-        # ID 중복 확인
-        train_id_duplicates = self.train_df['ID'].duplicated().sum()
-        test_id_duplicates = self.test_df['ID'].duplicated().sum()
-        
-        if train_id_duplicates > 0:
-            integrity_issues.append(f"훈련 데이터 ID 중복: {train_id_duplicates}개")
-        
-        if test_id_duplicates > 0:
-            integrity_issues.append(f"테스트 데이터 ID 중복: {test_id_duplicates}개")
-        
-        # 타겟 변수 유효성 확인
-        if 'support_needs' in self.train_df.columns:
-            invalid_targets = self.train_df['support_needs'].isin([0, 1, 2]).sum()
-            total_targets = len(self.train_df)
-            
-            if invalid_targets != total_targets:
-                integrity_issues.append(f"잘못된 타겟 값: {total_targets - invalid_targets}개")
-        
-        # 결측치 패턴 분석
-        missing_analysis = {}
-        for col in self.train_df.columns:
-            if col != 'ID':
-                missing_count = self.train_df[col].isnull().sum()
-                missing_ratio = missing_count / len(self.train_df)
+        for feature in numeric_features:
+            if feature in self.train_df.columns and feature in self.test_df.columns:
+                train_vals = self.train_df[feature].dropna()
+                test_vals = self.test_df[feature].dropna()
                 
-                if missing_ratio > 0.1:
-                    missing_analysis[col] = missing_ratio
-                    integrity_issues.append(f"{col} 높은 결측률: {missing_ratio:.1%}")
+                # KS 테스트
+                ks_stat, ks_p = ks_2samp(train_vals, test_vals)
+                
+                # 기본 통계량
+                train_stats = {
+                    'mean': train_vals.mean(),
+                    'std': train_vals.std(),
+                    'skew': train_vals.skew(),
+                    'kurtosis': train_vals.kurtosis()
+                }
+                
+                test_stats = {
+                    'mean': test_vals.mean(),
+                    'std': test_vals.std(),
+                    'skew': test_vals.skew(),
+                    'kurtosis': test_vals.kurtosis()
+                }
+                
+                # PSI 계산
+                psi_score = self.calculate_psi(train_vals, test_vals)
+                
+                distribution_analysis[feature] = {
+                    'train_stats': train_stats,
+                    'test_stats': test_stats,
+                    'ks_statistic': ks_stat,
+                    'ks_p_value': ks_p,
+                    'psi_score': psi_score,
+                    'distribution_shift': ks_stat > 0.1 or psi_score > 0.2
+                }
+                
+                if distribution_analysis[feature]['distribution_shift']:
+                    print(f"{feature} 분포 이동 탐지: KS={ks_stat:.3f}, PSI={psi_score:.3f}")
         
-        self.analysis_results['integrity'] = {
-            'issues': integrity_issues,
-            'missing_analysis': missing_analysis
-        }
-        
-        return len(integrity_issues) == 0
+        return distribution_analysis
     
-    def create_temporal_split_strategy(self):
-        """시간적 분할 전략 생성"""
-        print("시간적 분할 전략 생성")
-        
-        temporal_analysis = self.analyze_temporal_structure()
-        
-        if not temporal_analysis:
-            return None
-        
-        # 안전한 훈련 데이터 마스크 생성
-        train_id_nums = []
-        for id_val in self.train_df['ID']:
-            try:
-                if '_' in str(id_val):
-                    num = int(str(id_val).split('_')[1])
-                    train_id_nums.append(num)
-                else:
-                    train_id_nums.append(99999)
-            except:
-                train_id_nums.append(99999)
-        
-        # 시간적 누수 방지를 위한 분할
-        safe_mask = [tid > self.temporal_cutoff for tid in train_id_nums]
-        
-        split_strategy = {
-            'temporal_cutoff': self.temporal_cutoff,
-            'safe_train_indices': [i for i, safe in enumerate(safe_mask) if safe],
-            'leakage_indices': [i for i, safe in enumerate(safe_mask) if not safe],
-            'safe_ratio': sum(safe_mask) / len(safe_mask)
-        }
-        
-        print(f"안전한 훈련 데이터 비율: {split_strategy['safe_ratio']:.3f}")
-        
-        if split_strategy['safe_ratio'] < 0.3:
-            print("경고: 안전한 훈련 데이터 부족")
-        
-        return split_strategy
+    def calculate_psi(self, train_data, test_data, bins=10):
+        """PSI 계산"""
+        try:
+            # 동일한 구간으로 분할
+            min_val = min(train_data.min(), test_data.min())
+            max_val = max(train_data.max(), test_data.max())
+            
+            bin_edges = np.linspace(min_val, max_val, bins + 1)
+            
+            train_hist, _ = np.histogram(train_data, bins=bin_edges)
+            test_hist, _ = np.histogram(test_data, bins=bin_edges)
+            
+            # 비율로 변환
+            train_pct = train_hist / len(train_data)
+            test_pct = test_hist / len(test_data)
+            
+            # PSI 계산
+            psi = 0
+            for i in range(len(train_pct)):
+                if train_pct[i] > 0 and test_pct[i] > 0:
+                    psi += (test_pct[i] - train_pct[i]) * np.log(test_pct[i] / train_pct[i])
+            
+            return psi
+            
+        except Exception:
+            return 0.0
     
-    def analyze_target_distribution(self):
-        """타겟 분포 분석"""
-        print("타겟 분포 분석")
+    def analyze_class_distribution(self):
+        """클래스 분포 분석"""
+        print("클래스 분포 분석")
         
         if 'support_needs' not in self.train_df.columns:
-            return None
+            return {}
         
         target_counts = self.train_df['support_needs'].value_counts().sort_index()
         total = len(self.train_df)
         
-        print("클래스 분포:")
         distribution_info = {}
-        
         for cls, count in target_counts.items():
-            pct = count / total * 100
+            pct = count / total
             distribution_info[cls] = {'count': count, 'percentage': pct}
-            print(f"  클래스 {cls}: {count:,}개 ({pct:.1f}%)")
+            print(f"클래스 {cls}: {count:,}개 ({pct:.3f})")
         
-        # 불균형 비율 계산
+        # 불균형 비율
         max_count = target_counts.max()
         min_count = target_counts.min()
         imbalance_ratio = max_count / min_count if min_count > 0 else 0
         
         print(f"불균형 비율: {imbalance_ratio:.2f}")
         
-        self.analysis_results['target'] = {
+        return {
             'distribution': distribution_info,
             'imbalance_ratio': imbalance_ratio,
-            'class_weights_needed': imbalance_ratio > 2.0
+            'needs_rebalancing': imbalance_ratio > 2.0
         }
-        
-        return target_counts, imbalance_ratio
     
-    def analyze_correlation_structure(self):
-        """상관관계 구조 분석"""
-        print("상관관계 구조 분석")
+    def analyze_feature_correlations(self):
+        """피처 상관관계 분석"""
+        print("피처 상관관계 분석")
+        
+        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        available_features = [f for f in numeric_features if f in self.train_df.columns]
+        
+        if not available_features or 'support_needs' not in self.train_df.columns:
+            return {}
+        
+        # 피처 간 상관관계
+        feature_corr = self.train_df[available_features].corr()
+        
+        # 높은 상관관계 쌍
+        high_corr_pairs = []
+        for i in range(len(available_features)):
+            for j in range(i+1, len(available_features)):
+                corr_val = feature_corr.iloc[i, j]
+                if abs(corr_val) > 0.8:
+                    high_corr_pairs.append({
+                        'feature1': available_features[i],
+                        'feature2': available_features[j],
+                        'correlation': corr_val
+                    })
+        
+        # 타겟과의 상관관계
+        target_corr = {}
+        for feature in available_features:
+            corr = self.train_df[[feature, 'support_needs']].corr().iloc[0, 1]
+            target_corr[feature] = corr
+        
+        if high_corr_pairs:
+            print("높은 상관관계:")
+            for pair in high_corr_pairs:
+                print(f"{pair['feature1']} - {pair['feature2']}: {pair['correlation']:.3f}")
+        
+        return {
+            'feature_correlations': feature_corr.to_dict(),
+            'high_corr_pairs': high_corr_pairs,
+            'target_correlations': target_corr
+        }
+    
+    def compute_feature_importance(self):
+        """피처 중요도 계산"""
+        print("피처 중요도 계산")
         
         if 'support_needs' not in self.train_df.columns:
             return {}
         
-        # 수치형 피처만 사용 (after_interaction 제외)
-        safe_numeric = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
-        available_numeric = [f for f in safe_numeric if f in self.train_df.columns]
+        # 수치형 피처
+        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        available_numeric = [f for f in numeric_features if f in self.train_df.columns]
         
-        correlation_analysis = {}
+        # 범주형 피처 인코딩
+        categorical_features = ['gender', 'subscription_type']
+        train_encoded = self.train_df.copy()
         
-        if available_numeric:
-            # 피처 간 상관관계
-            feature_corr_matrix = self.train_df[available_numeric].corr()
-            
-            # 높은 상관관계 피처 쌍 찾기
-            high_corr_pairs = []
-            for i in range(len(available_numeric)):
-                for j in range(i+1, len(available_numeric)):
-                    corr_val = feature_corr_matrix.iloc[i, j]
-                    if abs(corr_val) > 0.8:
-                        high_corr_pairs.append({
-                            'feature1': available_numeric[i],
-                            'feature2': available_numeric[j],
-                            'correlation': corr_val
-                        })
-            
-            # 타겟과의 상관관계
-            target_correlations = {}
-            for feature in available_numeric:
-                corr = self.train_df[[feature, 'support_needs']].corr().iloc[0, 1]
-                target_correlations[feature] = corr
-            
-            correlation_analysis = {
-                'feature_correlations': feature_corr_matrix.to_dict(),
-                'high_corr_pairs': high_corr_pairs,
-                'target_correlations': target_correlations
-            }
-            
-            if high_corr_pairs:
-                print("높은 상관관계 피처 쌍:")
-                for pair in high_corr_pairs:
-                    print(f"  {pair['feature1']} - {pair['feature2']}: {pair['correlation']:.3f}")
+        for col in categorical_features:
+            if col in self.train_df.columns:
+                le = LabelEncoder()
+                train_encoded[col] = le.fit_transform(train_encoded[col].fillna('Unknown'))
+                available_numeric.append(col)
         
-        return correlation_analysis
+        if not available_numeric:
+            return {}
+        
+        # 상호정보량 계산
+        X = train_encoded[available_numeric].fillna(0)
+        y = train_encoded['support_needs']
+        
+        mi_scores = mutual_info_classif(X, y, random_state=42)
+        importance_dict = dict(zip(available_numeric, mi_scores))
+        
+        # 정렬
+        importance_sorted = sorted(importance_dict.items(), key=lambda x: x[1], reverse=True)
+        
+        print("피처 중요도:")
+        for feature, score in importance_sorted:
+            print(f"{feature}: {score:.4f}")
+        
+        return importance_dict
+    
+    def validate_data_integrity(self):
+        """데이터 무결성 검증"""
+        print("데이터 무결성 검증")
+        
+        issues = []
+        
+        # ID 중복 확인
+        train_duplicates = self.train_df['ID'].duplicated().sum()
+        test_duplicates = self.test_df['ID'].duplicated().sum()
+        
+        if train_duplicates > 0:
+            issues.append(f"훈련 ID 중복: {train_duplicates}")
+        if test_duplicates > 0:
+            issues.append(f"테스트 ID 중복: {test_duplicates}")
+        
+        # 타겟 유효성
+        if 'support_needs' in self.train_df.columns:
+            invalid_targets = ~self.train_df['support_needs'].isin([0, 1, 2])
+            invalid_count = invalid_targets.sum()
+            if invalid_count > 0:
+                issues.append(f"잘못된 타겟: {invalid_count}")
+        
+        # 결측치 패턴
+        missing_info = {}
+        for col in self.train_df.columns:
+            if col != 'ID':
+                missing_ratio = self.train_df[col].isnull().mean()
+                if missing_ratio > 0.1:
+                    missing_info[col] = missing_ratio
+                    issues.append(f"{col} 결측률: {missing_ratio:.1%}")
+        
+        if issues:
+            print("무결성 문제:")
+            for issue in issues:
+                print(f"- {issue}")
+        else:
+            print("무결성 검증 통과")
+        
+        return len(issues) == 0, issues, missing_info
+    
+    def analyze_categorical_distributions(self):
+        """범주형 변수 분포 분석"""
+        print("범주형 분포 분석")
+        
+        categorical_cols = ['gender', 'subscription_type']
+        categorical_analysis = {}
+        
+        for col in categorical_cols:
+            if col in self.train_df.columns and col in self.test_df.columns:
+                train_dist = self.train_df[col].value_counts(normalize=True)
+                test_dist = self.test_df[col].value_counts(normalize=True)
+                
+                # 공통 카테고리
+                common_cats = set(train_dist.index) & set(test_dist.index)
+                
+                if len(common_cats) > 1:
+                    # 카이제곱 검정을 위한 데이터 준비
+                    train_counts = []
+                    test_counts = []
+                    
+                    for cat in sorted(common_cats):
+                        train_counts.append(self.train_df[col].eq(cat).sum())
+                        test_counts.append(self.test_df[col].eq(cat).sum())
+                    
+                    try:
+                        chi2_stat, chi2_p = chi2_contingency([train_counts, test_counts])[:2]
+                    except:
+                        chi2_stat, chi2_p = 0, 1
+                    
+                    categorical_analysis[col] = {
+                        'train_dist': train_dist.to_dict(),
+                        'test_dist': test_dist.to_dict(),
+                        'chi2_statistic': chi2_stat,
+                        'chi2_p_value': chi2_p,
+                        'distribution_shift': chi2_p < 0.01
+                    }
+                    
+                    if chi2_p < 0.01:
+                        print(f"{col} 분포 이동: p={chi2_p:.4f}")
+        
+        return categorical_analysis
+    
+    def compute_data_quality_score(self):
+        """데이터 품질 점수 계산"""
+        print("데이터 품질 점수 계산")
+        
+        quality_metrics = {}
+        
+        # 완전성 점수
+        completeness_scores = []
+        for col in self.train_df.columns:
+            if col != 'ID':
+                completeness = 1 - self.train_df[col].isnull().mean()
+                completeness_scores.append(completeness)
+        
+        quality_metrics['completeness'] = np.mean(completeness_scores)
+        
+        # 일관성 점수
+        consistency_scores = []
+        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        
+        for feature in numeric_features:
+            if feature in self.train_df.columns and feature in self.test_df.columns:
+                train_vals = self.train_df[feature].dropna()
+                test_vals = self.test_df[feature].dropna()
+                
+                if len(train_vals) > 0 and len(test_vals) > 0:
+                    ks_stat, _ = ks_2samp(train_vals, test_vals)
+                    consistency = 1 - min(ks_stat, 1.0)
+                    consistency_scores.append(consistency)
+        
+        quality_metrics['consistency'] = np.mean(consistency_scores) if consistency_scores else 0
+        
+        # 유효성 점수
+        validity_score = 1.0
+        if 'support_needs' in self.train_df.columns:
+            invalid_ratio = ~self.train_df['support_needs'].isin([0, 1, 2]).mean()
+            validity_score = 1 - invalid_ratio
+        
+        quality_metrics['validity'] = validity_score
+        
+        # 종합 점수
+        overall_quality = (
+            quality_metrics['completeness'] * 0.4 +
+            quality_metrics['consistency'] * 0.4 +
+            quality_metrics['validity'] * 0.2
+        )
+        
+        quality_metrics['overall'] = overall_quality
+        
+        print(f"완전성: {quality_metrics['completeness']:.3f}")
+        print(f"일관성: {quality_metrics['consistency']:.3f}")
+        print(f"유효성: {quality_metrics['validity']:.3f}")
+        print(f"종합 품질: {overall_quality:.3f}")
+        
+        return quality_metrics
     
     def run_analysis(self):
         """전체 분석 실행"""
@@ -440,38 +448,47 @@ class DataAnalyzer:
         print("=" * 40)
         
         if self.load_data() is None:
-            print("데이터 로드 실패")
             return {}
         
-        # 기본 분석
-        self.validate_data_integrity()
+        # 무결성 검증
+        integrity_ok, integrity_issues, missing_info = self.validate_data_integrity()
+        self.analysis_results['integrity'] = {
+            'passed': integrity_ok,
+            'issues': integrity_issues,
+            'missing_info': missing_info
+        }
         
-        # 시간적 구조 분석
+        # 시간적 구조
         temporal_info = self.analyze_temporal_structure()
         self.analysis_results['temporal'] = temporal_info
         
-        # 타겟 분석
-        target_info = self.analyze_target_distribution()
-        
-        # 피처 패턴 분석
-        pattern_info = self.analyze_feature_patterns()
-        self.analysis_results['patterns'] = pattern_info
-        
-        # 클래스 관계 분석
-        class_info = self.analyze_class_relationships()
-        self.analysis_results['class_relationships'] = class_info
-        
-        # 상관관계 분석
-        correlation_info = self.analyze_correlation_structure()
-        self.analysis_results['correlations'] = correlation_info
-        
-        # 누수 탐지
-        leakage_info = self.detect_leakage_features()
+        # 타겟 누수 탐지
+        leakage_info = self.detect_target_leakage()
         self.analysis_results['leakage'] = leakage_info
         
-        # 시간적 분할 전략
-        split_strategy = self.create_temporal_split_strategy()
-        self.analysis_results['split_strategy'] = split_strategy
+        # 분포 분석
+        distribution_info = self.analyze_feature_distributions()
+        self.analysis_results['distributions'] = distribution_info
+        
+        # 범주형 분포
+        categorical_info = self.analyze_categorical_distributions()
+        self.analysis_results['categorical'] = categorical_info
+        
+        # 클래스 분포
+        class_info = self.analyze_class_distribution()
+        self.analysis_results['class_distribution'] = class_info
+        
+        # 상관관계
+        correlation_info = self.analyze_feature_correlations()
+        self.analysis_results['correlations'] = correlation_info
+        
+        # 피처 중요도
+        importance_info = self.compute_feature_importance()
+        self.analysis_results['feature_importance'] = importance_info
+        
+        # 데이터 품질
+        quality_info = self.compute_data_quality_score()
+        self.analysis_results['data_quality'] = quality_info
         
         print("데이터 분석 완료")
         return self.analysis_results
