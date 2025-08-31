@@ -197,7 +197,7 @@ class ModelTrainer:
                 learning_rate=0.05,
                 depth=6,
                 l2_leaf_reg=3,
-                bootstrap_type='Bayesian',
+                bootstrap_type='Bernoulli',
                 subsample=0.8,
                 colsample_bylevel=0.8,
                 random_seed=42,
@@ -649,7 +649,17 @@ class ModelTrainer:
                 elif name == 'xgboost':
                     model.save_model(f'models/{name}_model.json')
                 elif name == 'catboost':
-                    model.save_model(f'models/{name}_model.pkl')
+                    try:
+                        model.save_model(f'models/{name}_model.cbm')
+                        print(f"  {name} 모델 저장 완료 (CBM 형식)")
+                    except Exception as cat_save_error:
+                        print(f"  {name} CBM 저장 실패: {cat_save_error}")
+                        try:
+                            joblib.dump(model, f'models/{name}_model.pkl')
+                            print(f"  {name} 모델 저장 완료 (PKL 형식)")
+                        except Exception as pkl_save_error:
+                            print(f"  {name} PKL 저장도 실패: {pkl_save_error}")
+                            continue
                 else:
                     joblib.dump(model, f'models/{name}_model.pkl')
                 

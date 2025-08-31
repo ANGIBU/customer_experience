@@ -76,7 +76,8 @@ class PredictionSystem:
             model_files = [
                 ('lightgbm', 'models/lightgbm_model.txt', 'lgb'),
                 ('xgboost', 'models/xgboost_model.json', 'xgb'),
-                ('catboost', 'models/catboost_model.pkl', 'cat'),
+                ('catboost', 'models/catboost_model.cbm', 'cat'),
+                ('catboost_pkl', 'models/catboost_model.pkl', 'cat_pkl'),
                 ('random_forest', 'models/random_forest_model.pkl', 'pkl'),
                 ('extra_trees', 'models/extra_trees_model.pkl', 'pkl'),
                 ('neural_network', 'models/neural_network_model.pkl', 'pkl'),
@@ -97,17 +98,23 @@ class PredictionSystem:
                             model.load_model(filepath)
                             self.models[name] = model
                         elif model_type == 'cat':
-                            self.models[name] = CatBoostClassifier()
-                            self.models[name].load_model(filepath)
+                            model = CatBoostClassifier()
+                            model.load_model(filepath)
+                            self.models['catboost'] = model
+                        elif model_type == 'cat_pkl':
+                            model = joblib.load(filepath)
+                            self.models['catboost'] = model
                         else:
                             self.models[name] = joblib.load(filepath)
                         
                         loaded_count += 1
-                        print(f"  {name} 로드 완료")
+                        model_name = 'catboost' if 'catboost' in name else name
+                        print(f"  {model_name} 로드 완료")
                     except Exception as e:
                         print(f"  {name} 로드 실패: {e}")
                 else:
-                    print(f"  {name} 파일 없음: {filepath}")
+                    if 'catboost' not in name:
+                        print(f"  {name} 파일 없음: {filepath}")
             
             if loaded_count == 0:
                 print("모델 파일이 없어 새로 학습합니다")
