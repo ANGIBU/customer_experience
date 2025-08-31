@@ -3,13 +3,14 @@
 import os
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+from sklearn.model_selection import StratifiedKFold
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
-from sklearn.metrics import accuracy_score, log_loss
+from sklearn.metrics import accuracy_score, log_loss, f1_score
 from sklearn.calibration import CalibratedClassifierCV
-from imblearn.over_sampling import ADASYN
+from imblearn.over_sampling import SMOTE, ADASYN
+from imblearn.combine import SMOTEENN
 import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostClassifier
@@ -26,13 +27,15 @@ class ModelTrainer:
         self.feature_names = None
         self.class_weights = None
         self.best_threshold = 0.5
+        self.ensemble_weights = {}
         
-    def calculate_class_weights(self, y_train):
+    def calculate_class_weights_optimal(self, y_train):
         """클래스 가중치 계산"""
         y_array = np.array(y_train)
         class_counts = np.bincount(y_array)
         total_samples = len(y_array)
         
+        # 균형 잡힌 가중치 계산
         weights = {}
         for i, count in enumerate(class_counts):
             if count > 0:
@@ -40,13 +43,15 @@ class ModelTrainer:
             else:
                 weights[i] = 1.0
         
-        weights[1] *= 1.4
+        # 클래스 1에 대한 특별 가중치 (불균형 보정)
+        weights[1] *= 1.25
+        weights[2] *= 1.1
         
         self.class_weights = weights
         return weights
     
     def safe_data_conversion(self, X, y=None):
-        """데이터 변환"""
+        """안전한 데이터 변환"""
         if hasattr(X, 'values'):
             X_array = X.values
         else:
@@ -69,66 +74,75 @@ class ModelTrainer:
         train_df = pd.read_csv('train.csv')
         test_df = pd.read_csv('test.csv')
         
+        # 데이터 분석으로부터 temporal_threshold 가져오기
+        from data_analysis import DataAnalyzer
+        analyzer = DataAnalyzer()
+        analysis_results = analyzer.run_analysis()
+        temporal_threshold = analysis_results.get('temporal', {}).get('temporal_threshold')
+        
         engineer = FeatureEngineer()
-        train_df, test_df = engineer.create_features(train_df, test_df)
+        train_df, test_df = engineer.create_features(train_df, test_df, temporal_threshold)
         
         preprocessor = DataPreprocessor()
-        train_df, test_df = preprocessor.process_data(train_df, test_df)
+        temporal_info = analysis_results.get('temporal')
+        train_df, test_df = preprocessor.process_data(train_df, test_df, temporal_info)
         
-        X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal(
-            train_df, test_df
+        X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_advanced(
+            train_df, test_df, val_size=0.18, gap_size=0.03
         )
         
         self.feature_names = list(X_train.columns)
-        self.calculate_class_weights(y_train)
+        self.calculate_class_weights_optimal(y_train)
         
         return X_train, X_val, y_train, y_val, X_test, test_ids, engineer, preprocessor
     
-    def apply_resampling(self, X_train, y_train):
-        """리샘플링 적용"""
-        print("리샘플링")
-        
+    def apply_resampling_combined(self, X_train, y_train):
+        """결합된 리샘플링 기법"""
         try:
             X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
             
-            # ADASYN 적용
-            adasyn = ADASYN(random_state=42, n_neighbors=5)
-            X_resampled, y_resampled = adasyn.fit_resample(X_train_clean, y_train_clean)
-            
-            print(f"리샘플링: {len(X_train_clean)} → {len(X_resampled)}")
-            
             # 클래스 분포 확인
-            unique, counts = np.unique(y_resampled, return_counts=True)
-            for cls, count in zip(unique, counts):
-                print(f"클래스 {cls}: {count}")
+            unique, counts = np.unique(y_train_clean, return_counts=True)
+            min_class_count = min(counts)
             
-            return X_resampled, y_resampled
+            # 불균형이 심한 경우에만 리샘플링 적용
+            imbalance_ratio = max(counts) / min_class_count
             
+            if imbalance_ratio > 2.5:
+                # SMOTEENN 사용 (Over + Under sampling 결합)
+                smoteenn = SMOTEENN(
+                    smote=SMOTE(random_state=42, k_neighbors=3),
+                    random_state=42
+                )
+                X_resampled, y_resampled = smoteenn.fit_resample(X_train_clean, y_train_clean)
+                
+                return X_resampled, y_resampled
+            else:
+                return X_train_clean, y_train_clean
+                
         except Exception as e:
-            print(f"리샘플링 오류: {e}")
             return self.safe_data_conversion(X_train, y_train)
     
-    def train_lightgbm(self, X_train, y_train, X_val, y_val):
-        """LightGBM 학습"""
-        print("LightGBM 학습")
-        
+    def train_lightgbm_tuned(self, X_train, y_train, X_val, y_val):
+        """LightGBM 모델 학습"""
         lgb_params = {
             'objective': 'multiclass',
             'num_class': 3,
             'metric': 'multi_logloss',
             'boosting_type': 'gbdt',
-            'num_leaves': 50,
-            'learning_rate': 0.03,
-            'feature_fraction': 0.85,
-            'bagging_fraction': 0.85,
-            'bagging_freq': 5,
-            'min_child_weight': 8,
-            'min_split_gain': 0.2,
-            'reg_alpha': 0.2,
-            'reg_lambda': 0.2,
-            'max_depth': 8,
+            'num_leaves': 45,
+            'learning_rate': 0.025,
+            'feature_fraction': 0.8,
+            'bagging_fraction': 0.8,
+            'bagging_freq': 6,
+            'min_child_weight': 10,
+            'min_split_gain': 0.1,
+            'reg_alpha': 0.1,
+            'reg_lambda': 0.1,
+            'max_depth': 7,
             'verbose': -1,
-            'random_state': 42
+            'random_state': 42,
+            'force_col_wise': True
         }
         
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
@@ -147,37 +161,34 @@ class ModelTrainer:
             lgb_params,
             train_data,
             valid_sets=[val_data],
-            num_boost_round=1500,
-            callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)]
+            num_boost_round=2000,
+            callbacks=[lgb.early_stopping(150), lgb.log_evaluation(0)]
         )
         
         y_pred = model.predict(X_val_clean)
         y_pred_class = np.argmax(y_pred, axis=1)
         accuracy = accuracy_score(y_val_clean, y_pred_class)
         
-        print(f"LightGBM 정확도: {accuracy:.4f}")
-        
         self.models['lightgbm'] = model
         return model, accuracy
     
-    def train_xgboost(self, X_train, y_train, X_val, y_val):
-        """XGBoost 학습"""
-        print("XGBoost 학습")
-        
+    def train_xgboost_tuned(self, X_train, y_train, X_val, y_val):
+        """XGBoost 모델 학습"""
         params = {
             'objective': 'multi:softprob',
             'num_class': 3,
             'eval_metric': 'mlogloss',
-            'max_depth': 8,
-            'learning_rate': 0.03,
-            'subsample': 0.85,
-            'colsample_bytree': 0.85,
-            'reg_alpha': 0.2,
-            'reg_lambda': 0.2,
-            'min_child_weight': 8,
-            'gamma': 0.2,
+            'max_depth': 7,
+            'learning_rate': 0.025,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'reg_alpha': 0.1,
+            'reg_lambda': 0.1,
+            'min_child_weight': 10,
+            'gamma': 0.1,
             'random_state': 42,
-            'verbosity': 0
+            'verbosity': 0,
+            'tree_method': 'hist'
         }
         
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
@@ -195,9 +206,9 @@ class ModelTrainer:
         model = xgb.train(
             params,
             train_data,
-            num_boost_round=1500,
+            num_boost_round=2000,
             evals=[(val_data, 'eval')],
-            early_stopping_rounds=100,
+            early_stopping_rounds=150,
             verbose_eval=0
         )
         
@@ -205,15 +216,11 @@ class ModelTrainer:
         y_pred_class = np.argmax(y_pred, axis=1)
         accuracy = accuracy_score(y_val_clean, y_pred_class)
         
-        print(f"XGBoost 정확도: {accuracy:.4f}")
-        
         self.models['xgboost'] = model
         return model, accuracy
     
-    def train_catboost(self, X_train, y_train, X_val, y_val):
-        """CatBoost 학습"""
-        print("CatBoost 학습")
-        
+    def train_catboost_tuned(self, X_train, y_train, X_val, y_val):
+        """CatBoost 모델 학습"""
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
@@ -224,16 +231,16 @@ class ModelTrainer:
             sample_weight[mask] = weight
         
         model = CatBoostClassifier(
-            iterations=1200,
-            learning_rate=0.03,
-            depth=8,
-            l2_leaf_reg=5,
+            iterations=2000,
+            learning_rate=0.025,
+            depth=7,
+            l2_leaf_reg=3,
             bootstrap_type='Bernoulli',
-            subsample=0.85,
-            colsample_bylevel=0.85,
+            subsample=0.8,
+            colsample_bylevel=0.8,
             random_seed=42,
             verbose=0,
-            early_stopping_rounds=100,
+            early_stopping_rounds=150,
             task_type='CPU',
             thread_count=-1
         )
@@ -249,24 +256,21 @@ class ModelTrainer:
         y_pred = model.predict(X_val_clean)
         accuracy = accuracy_score(y_val_clean, y_pred)
         
-        print(f"CatBoost 정확도: {accuracy:.4f}")
-        
         self.models['catboost'] = model
         return model, accuracy
     
-    def train_random_forest(self, X_train, y_train, X_val, y_val):
-        """Random Forest 학습"""
-        print("Random Forest 학습")
-        
+    def train_random_forest_tuned(self, X_train, y_train, X_val, y_val):
+        """Random Forest 모델 학습"""
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = RandomForestClassifier(
-            n_estimators=400,
-            max_depth=15,
-            min_samples_split=8,
-            min_samples_leaf=4,
-            max_features=0.75,
+            n_estimators=500,
+            max_depth=12,
+            min_samples_split=10,
+            min_samples_leaf=5,
+            max_features=0.7,
+            bootstrap=True,
             class_weight=self.class_weights,
             random_state=42,
             n_jobs=-1
@@ -277,29 +281,53 @@ class ModelTrainer:
         y_pred = model.predict(X_val_clean)
         accuracy = accuracy_score(y_val_clean, y_pred)
         
-        print(f"Random Forest 정확도: {accuracy:.4f}")
-        
         self.models['random_forest'] = model
         return model, accuracy
     
-    def train_neural_network(self, X_train, y_train, X_val, y_val):
-        """신경망 학습"""
-        print("Neural Network 학습")
-        
+    def train_gradient_boosting(self, X_train, y_train, X_val, y_val):
+        """Gradient Boosting 모델 학습"""
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        model = MLPClassifier(
-            hidden_layer_sizes=(256, 128, 64),
-            activation='relu',
-            solver='adam',
-            alpha=0.001,
-            learning_rate='adaptive',
-            max_iter=1500,
+        model = GradientBoostingClassifier(
+            n_estimators=300,
+            learning_rate=0.05,
+            max_depth=6,
+            min_samples_split=20,
+            min_samples_leaf=10,
+            subsample=0.8,
+            random_state=42
+        )
+        
+        # 클래스 가중치를 sample_weight으로 변환
+        sample_weight = np.ones(len(y_train_clean))
+        for i, weight in self.class_weights.items():
+            mask = y_train_clean == i
+            sample_weight[mask] = weight
+        
+        model.fit(X_train_clean, y_train_clean, sample_weight=sample_weight)
+        
+        y_pred = model.predict(X_val_clean)
+        accuracy = accuracy_score(y_val_clean, y_pred)
+        
+        self.models['gradient_boosting'] = model
+        return model, accuracy
+    
+    def train_extra_trees(self, X_train, y_train, X_val, y_val):
+        """Extra Trees 모델 학습"""
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
+        
+        model = ExtraTreesClassifier(
+            n_estimators=400,
+            max_depth=12,
+            min_samples_split=8,
+            min_samples_leaf=4,
+            max_features=0.75,
+            bootstrap=True,
+            class_weight=self.class_weights,
             random_state=42,
-            early_stopping=True,
-            validation_fraction=0.15,
-            n_iter_no_change=30
+            n_jobs=-1
         )
         
         model.fit(X_train_clean, y_train_clean)
@@ -307,169 +335,178 @@ class ModelTrainer:
         y_pred = model.predict(X_val_clean)
         accuracy = accuracy_score(y_val_clean, y_pred)
         
-        print(f"Neural Network 정확도: {accuracy:.4f}")
+        self.models['extra_trees'] = model
+        return model, accuracy
+    
+    def train_neural_network_tuned(self, X_train, y_train, X_val, y_val):
+        """신경망 모델 학습"""
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
+        
+        model = MLPClassifier(
+            hidden_layer_sizes=(200, 100, 50),
+            activation='relu',
+            solver='adam',
+            alpha=0.001,
+            learning_rate='adaptive',
+            learning_rate_init=0.001,
+            max_iter=2000,
+            random_state=42,
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=50
+        )
+        
+        model.fit(X_train_clean, y_train_clean)
+        
+        y_pred = model.predict(X_val_clean)
+        accuracy = accuracy_score(y_val_clean, y_pred)
         
         self.models['neural_network'] = model
         return model, accuracy
     
-    def create_stacking_ensemble(self, X_train, y_train, X_val, y_val):
+    def create_stacking_ensemble_advanced(self, X_train, y_train, X_val, y_val):
         """스태킹 앙상블"""
-        print("스태킹 앙상블")
-        
-        base_models = ['lightgbm', 'xgboost', 'catboost', 'random_forest']
+        base_models = ['lightgbm', 'xgboost', 'catboost', 'random_forest', 'gradient_boosting']
         available_models = [name for name in base_models if name in self.models]
         
         if len(available_models) < 3:
-            print("스태킹을 위한 모델 부족")
             return None, 0.0
         
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        # 메타 피처 생성
-        meta_features_train = []
-        meta_features_val = []
+        # 메타 피처 생성 (5-fold CV)
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        meta_features_train = np.zeros((len(X_train_clean), len(available_models) * 3))
+        meta_features_val = np.zeros((len(X_val_clean), len(available_models) * 3))
         
-        for model_name in available_models:
+        for model_idx, model_name in enumerate(available_models):
             model = self.models[model_name]
             
-            if model_name == 'lightgbm':
-                train_pred = model.predict(X_train_clean)
-                val_pred = model.predict(X_val_clean)
+            # 교차 검증으로 메타 피처 생성
+            for fold_idx, (fold_train_idx, fold_val_idx) in enumerate(skf.split(X_train_clean, y_train_clean)):
+                X_fold_train = X_train_clean[fold_train_idx]
+                y_fold_train = y_train_clean[fold_train_idx]
+                X_fold_val = X_train_clean[fold_val_idx]
                 
-                if train_pred.ndim == 2:
-                    meta_features_train.append(train_pred)
-                    meta_features_val.append(val_pred)
+                # 임시 모델 학습
+                if model_name == 'lightgbm':
+                    temp_model = lgb.LGBMClassifier(random_state=42, verbose=-1, n_estimators=200)
+                elif model_name == 'xgboost':
+                    temp_model = xgb.XGBClassifier(random_state=42, verbosity=0, n_estimators=200)
+                elif model_name == 'catboost':
+                    temp_model = CatBoostClassifier(random_seed=42, verbose=0, iterations=200)
+                elif model_name == 'random_forest':
+                    temp_model = RandomForestClassifier(random_state=42, n_estimators=200)
+                else:
+                    temp_model = GradientBoostingClassifier(random_state=42, n_estimators=200)
+                
+                temp_model.fit(X_fold_train, y_fold_train)
+                
+                if hasattr(temp_model, 'predict_proba'):
+                    fold_pred = temp_model.predict_proba(X_fold_val)
+                    meta_features_train[fold_val_idx, model_idx*3:(model_idx+1)*3] = fold_pred
+                
+            # 검증 데이터에 대한 예측
+            if model_name == 'lightgbm':
+                val_pred = model.predict(X_val_clean)
+                if val_pred.ndim == 2 and val_pred.shape[1] == 3:
+                    meta_features_val[:, model_idx*3:(model_idx+1)*3] = val_pred
                     
             elif model_name == 'xgboost':
-                train_data = xgb.DMatrix(X_train_clean, feature_names=self.feature_names)
                 val_data = xgb.DMatrix(X_val_clean, feature_names=self.feature_names)
-                
-                train_pred = model.predict(train_data)
                 val_pred = model.predict(val_data)
-                
-                if train_pred.ndim == 2:
-                    meta_features_train.append(train_pred)
-                    meta_features_val.append(val_pred)
+                if val_pred.ndim == 2 and val_pred.shape[1] == 3:
+                    meta_features_val[:, model_idx*3:(model_idx+1)*3] = val_pred
                     
             else:
                 if hasattr(model, 'predict_proba'):
-                    train_pred = model.predict_proba(X_train_clean)
                     val_pred = model.predict_proba(X_val_clean)
-                    
-                    if train_pred.shape[1] == 3:
-                        meta_features_train.append(train_pred)
-                        meta_features_val.append(val_pred)
-        
-        if len(meta_features_train) < 2:
-            print("메타 피처 생성 실패")
-            return None, 0.0
+                    if val_pred.shape[1] == 3:
+                        meta_features_val[:, model_idx*3:(model_idx+1)*3] = val_pred
         
         # 메타 모델 학습
-        meta_X_train = np.hstack(meta_features_train)
-        meta_X_val = np.hstack(meta_features_val)
-        
         meta_model = LogisticRegression(
             class_weight=self.class_weights,
             random_state=42,
-            max_iter=1000
+            max_iter=2000,
+            solver='liblinear'
         )
         
-        meta_model.fit(meta_X_train, y_train_clean)
+        meta_model.fit(meta_features_train, y_train_clean)
         
-        y_pred = meta_model.predict(meta_X_val)
+        y_pred = meta_model.predict(meta_features_val)
         accuracy = accuracy_score(y_val_clean, y_pred)
-        
-        print(f"스태킹 정확도: {accuracy:.4f}")
         
         self.models['stacking'] = {
             'base_models': available_models,
-            'meta_model': meta_model
+            'meta_model': meta_model,
+            'base_model_objects': {name: self.models[name] for name in available_models}
         }
         
         return meta_model, accuracy
     
-    def perform_temporal_cv(self, X, y, model_type='lightgbm', n_splits=5):
-        """시간 기반 교차 검증"""
-        print(f"{model_type.upper()} 시간 CV")
+    def optimize_ensemble_weights(self, X_val, y_val):
+        """앙상블 가중치 최적화"""
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        if 'temporal_id' in X.columns:
-            temporal_ids = X['temporal_id'].values
-            sorted_indices = np.argsort(temporal_ids)
-            
-            fold_size = len(sorted_indices) // (n_splits + 1)
-            cv_scores = []
-            
-            temporal_col_idx = list(X.columns).index('temporal_id')
-            
-            for fold in range(n_splits):
-                train_end = (fold + 1) * fold_size
-                val_start = train_end
-                val_end = val_start + fold_size
+        # 각 모델의 성능 평가
+        model_scores = {}
+        model_predictions = {}
+        
+        for name, model in self.models.items():
+            if name == 'stacking':
+                continue
                 
-                if val_end > len(sorted_indices):
-                    break
+            try:
+                if name == 'lightgbm':
+                    y_pred_proba = model.predict(X_val_clean)
+                    if y_pred_proba.ndim == 2:
+                        y_pred = np.argmax(y_pred_proba, axis=1)
+                        model_predictions[name] = y_pred_proba
+                        
+                elif name == 'xgboost':
+                    val_data = xgb.DMatrix(X_val_clean, feature_names=self.feature_names)
+                    y_pred_proba = model.predict(val_data)
+                    if y_pred_proba.ndim == 2:
+                        y_pred = np.argmax(y_pred_proba, axis=1)
+                        model_predictions[name] = y_pred_proba
+                        
+                else:
+                    if hasattr(model, 'predict_proba'):
+                        y_pred_proba = model.predict_proba(X_val_clean)
+                        y_pred = np.argmax(y_pred_proba, axis=1)
+                        model_predictions[name] = y_pred_proba
+                    else:
+                        y_pred = model.predict(X_val_clean)
+                        model_predictions[name] = None
                 
-                train_idx = sorted_indices[:train_end]
-                val_idx = sorted_indices[val_start:val_end]
+                accuracy = accuracy_score(y_val_clean, y_pred)
+                f1 = f1_score(y_val_clean, y_pred, average='macro')
                 
-                X_train_fold = np.delete(X.iloc[train_idx].values, temporal_col_idx, axis=1)
-                y_train_fold = y.iloc[train_idx].values
-                X_val_fold = np.delete(X.iloc[val_idx].values, temporal_col_idx, axis=1)
-                y_val_fold = y.iloc[val_idx].values
+                # 성능 점수 (accuracy와 f1의 조화평균)
+                combined_score = 2 * (accuracy * f1) / (accuracy + f1) if (accuracy + f1) > 0 else 0
+                model_scores[name] = combined_score
                 
-                X_train_clean, y_train_clean = self.safe_data_conversion(X_train_fold, y_train_fold)
-                X_val_clean, y_val_clean = self.safe_data_conversion(X_val_fold, y_val_fold)
-                
-                if model_type == 'lightgbm':
-                    params = {
-                        'objective': 'multiclass', 'num_class': 3,
-                        'verbose': -1, 'random_state': 42,
-                        'num_leaves': 31, 'learning_rate': 0.05
-                    }
-                    
-                    train_data = lgb.Dataset(X_train_clean, label=y_train_clean)
-                    model = lgb.train(params, train_data, num_boost_round=300)
-                    y_pred = model.predict(X_val_clean)
-                    y_pred_class = np.argmax(y_pred, axis=1)
-                    
-                elif model_type == 'random_forest':
-                    model = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
-                    model.fit(X_train_clean, y_train_clean)
-                    y_pred_class = model.predict(X_val_clean)
-                
-                accuracy = accuracy_score(y_val_clean, y_pred_class)
-                cv_scores.append(accuracy)
+            except Exception as e:
+                model_scores[name] = 0.0
+        
+        # 가중치 정규화
+        total_score = sum(model_scores.values())
+        if total_score > 0:
+            for name in model_scores:
+                self.ensemble_weights[name] = model_scores[name] / total_score
         else:
-            tscv = TimeSeriesSplit(n_splits=n_splits)
-            cv_scores = []
-            
-            X_clean, y_clean = self.safe_data_conversion(X, y)
-            
-            for fold, (train_idx, val_idx) in enumerate(tscv.split(X_clean)):
-                model = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
-                model.fit(X_clean[train_idx], y_clean[train_idx])
-                y_pred = model.predict(X_clean[val_idx])
-                accuracy = accuracy_score(y_clean[val_idx], y_pred)
-                cv_scores.append(accuracy)
+            # 균등 가중치
+            num_models = len(model_scores)
+            for name in model_scores:
+                self.ensemble_weights[name] = 1.0 / num_models
         
-        mean_score = np.mean(cv_scores) if cv_scores else 0.0
-        std_score = np.std(cv_scores) if cv_scores else 0.0
-        
-        print(f"시간 CV 점수: {mean_score:.4f} (+/- {std_score:.4f})")
-        
-        self.cv_scores[model_type] = {
-            'scores': cv_scores,
-            'mean': mean_score,
-            'std': std_score
-        }
-        
-        return mean_score, std_score
+        return self.ensemble_weights
     
     def save_models(self, engineer, preprocessor):
         """모델 저장"""
-        print("모델 저장")
-        
         os.makedirs('models', exist_ok=True)
         
         # 전처리기 저장
@@ -480,7 +517,8 @@ class ModelTrainer:
         feature_info = {
             'feature_names': self.feature_names,
             'feature_count': len(self.feature_names),
-            'class_weights': self.class_weights
+            'class_weights': self.class_weights,
+            'ensemble_weights': self.ensemble_weights
         }
         joblib.dump(feature_info, 'models/feature_info.pkl')
         
@@ -492,24 +530,18 @@ class ModelTrainer:
                     model.save_model(f'models/{name}_model.txt')
                 elif name == 'xgboost':
                     model.save_model(f'models/{name}_model.json')
-                elif name == 'stacking':
-                    joblib.dump(model, f'models/{name}_model.pkl')
                 else:
                     joblib.dump(model, f'models/{name}_model.pkl')
                 
                 saved_count += 1
-                print(f"{name} 저장 완료")
                 
             except Exception as e:
-                print(f"{name} 저장 오류: {e}")
+                continue
         
-        print(f"총 {saved_count}개 모델 저장")
+        return saved_count
     
     def train_models(self, X_train, X_val, y_train, y_val, engineer=None, preprocessor=None):
-        """모델 학습"""
-        print("모델 학습 시작")
-        print("=" * 40)
-        
+        """모델 학습 파이프라인"""
         if engineer is None:
             engineer = FeatureEngineer()
         if preprocessor is None:
@@ -517,82 +549,81 @@ class ModelTrainer:
         if self.feature_names is None:
             self.feature_names = list(X_train.columns)
         if self.class_weights is None:
-            self.calculate_class_weights(y_train)
+            self.calculate_class_weights_optimal(y_train)
         
         model_results = {}
         
         # 리샘플링 적용
-        X_train_resampled, y_train_resampled = self.apply_resampling(X_train, y_train)
+        X_train_resampled, y_train_resampled = self.apply_resampling_combined(X_train, y_train)
         
         # LightGBM
         try:
-            lgb_model, lgb_acc = self.train_lightgbm(X_train_resampled, y_train_resampled, X_val, y_val)
+            lgb_model, lgb_acc = self.train_lightgbm_tuned(X_train_resampled, y_train_resampled, X_val, y_val)
             model_results['lightgbm'] = lgb_acc
-        except Exception as e:
-            print(f"LightGBM 실패: {e}")
+        except Exception:
             model_results['lightgbm'] = 0.0
         
         # XGBoost
         try:
-            xgb_model, xgb_acc = self.train_xgboost(X_train_resampled, y_train_resampled, X_val, y_val)
+            xgb_model, xgb_acc = self.train_xgboost_tuned(X_train_resampled, y_train_resampled, X_val, y_val)
             model_results['xgboost'] = xgb_acc
-        except Exception as e:
-            print(f"XGBoost 실패: {e}")
+        except Exception:
             model_results['xgboost'] = 0.0
         
         # CatBoost
         try:
-            cat_model, cat_acc = self.train_catboost(X_train_resampled, y_train_resampled, X_val, y_val)
+            cat_model, cat_acc = self.train_catboost_tuned(X_train_resampled, y_train_resampled, X_val, y_val)
             model_results['catboost'] = cat_acc
-        except Exception as e:
-            print(f"CatBoost 실패: {e}")
+        except Exception:
             model_results['catboost'] = 0.0
         
         # Random Forest
         try:
-            rf_model, rf_acc = self.train_random_forest(X_train_resampled, y_train_resampled, X_val, y_val)
+            rf_model, rf_acc = self.train_random_forest_tuned(X_train_resampled, y_train_resampled, X_val, y_val)
             model_results['random_forest'] = rf_acc
-        except Exception as e:
-            print(f"Random Forest 실패: {e}")
+        except Exception:
             model_results['random_forest'] = 0.0
+        
+        # Gradient Boosting
+        try:
+            gb_model, gb_acc = self.train_gradient_boosting(X_train_resampled, y_train_resampled, X_val, y_val)
+            model_results['gradient_boosting'] = gb_acc
+        except Exception:
+            model_results['gradient_boosting'] = 0.0
+        
+        # Extra Trees
+        try:
+            et_model, et_acc = self.train_extra_trees(X_train_resampled, y_train_resampled, X_val, y_val)
+            model_results['extra_trees'] = et_acc
+        except Exception:
+            model_results['extra_trees'] = 0.0
         
         # Neural Network
         try:
-            nn_model, nn_acc = self.train_neural_network(X_train_resampled, y_train_resampled, X_val, y_val)
+            nn_model, nn_acc = self.train_neural_network_tuned(X_train_resampled, y_train_resampled, X_val, y_val)
             model_results['neural_network'] = nn_acc
-        except Exception as e:
-            print(f"Neural Network 실패: {e}")
+        except Exception:
             model_results['neural_network'] = 0.0
+        
+        # 앙상블 가중치 최적화
+        self.optimize_ensemble_weights(X_val, y_val)
         
         # 스태킹 앙상블
         try:
-            stacking_model, stacking_acc = self.create_stacking_ensemble(X_train, y_train, X_val, y_val)
+            stacking_model, stacking_acc = self.create_stacking_ensemble_advanced(X_train, y_train, X_val, y_val)
             if stacking_model is not None:
                 model_results['stacking'] = stacking_acc
-        except Exception as e:
-            print(f"스태킹 실패: {e}")
-        
-        # 시간 기반 교차 검증
-        if len(self.models) > 0:
-            full_X = pd.concat([X_train, X_val])
-            full_y = pd.concat([y_train, y_val])
-            
-            if 'lightgbm' in self.models:
-                self.perform_temporal_cv(full_X, full_y, 'lightgbm')
+        except Exception:
+            pass
         
         # 모델 저장
         self.save_models(engineer, preprocessor)
         
         # 결과 출력
-        print("\n모델 성능:")
         valid_results = {k: v for k, v in model_results.items() if v > 0}
-        
-        for model_name, accuracy in valid_results.items():
-            print(f"{model_name}: {accuracy:.4f}")
         
         if valid_results:
             best_model = max(valid_results.items(), key=lambda x: x[1])
-            print(f"최고 성능: {best_model[1]:.4f} ({best_model[0]})")
 
 def main():
     trainer = ModelTrainer()
