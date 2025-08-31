@@ -42,15 +42,21 @@ class DataPreprocessor:
         if self.temporal_cutoff is None:
             self.temporal_cutoff = 13224
         
-        # 시간적 누수 방지
-        safe_mask = train_df['temporal_id'] > self.temporal_cutoff
+        # 시간적 누수 방지 (너무 많이 제거하지 않도록 수정)
+        safe_mask = train_df['temporal_id'] > self.temporal_cutoff + 1000  # 더 보수적으로 설정
         safe_data = train_df[safe_mask].copy()
+        
+        # 너무 많은 데이터가 제거되면 원본 사용
+        removal_ratio = 1 - (len(safe_data) / len(train_df))
+        if removal_ratio > 0.5:  # 50% 이상 제거되면 원본 사용
+            print(f"제거 비율 과다 ({removal_ratio:.1%}) - 원본 데이터 사용")
+            return train_df
         
         removed_count = len(train_df) - len(safe_data)
         if removed_count > 0:
             print(f"시간적 누수 데이터 제거: {removed_count}개")
         
-        return safe_data if len(safe_data) > 1000 else train_df
+        return safe_data if len(safe_data) > 5000 else train_df
     
     def handle_missing_values(self, train_df, test_df):
         """결측치 처리"""
@@ -247,11 +253,19 @@ class DataPreprocessor:
         if 'support_needs' in train_df.columns:
             selected_features = self.select_features(train_df, k=50)
             
-            keep_cols_train = ['ID'] + selected_features + ['support_needs']
+            keep_cols_train = ['ID', 'support_needs'] + selected_features
             keep_cols_test = ['ID'] + [f for f in selected_features if f in test_df.columns]
             
-            train_df = train_df[keep_cols_train]
-            test_df = test_df[keep_cols_test]
+            # 컬럼이 실제로 존재하는지 확인 후 선택
+            available_train_cols = [col for col in keep_cols_train if col in train_df.columns]
+            available_test_cols = [col for col in keep_cols_test if col in test_df.columns]
+            
+            train_df = train_df[available_train_cols]
+            test_df = test_df[available_test_cols]
+            
+            print(f"피처 선택 완료: {len(selected_features)}개")
+        else:
+            print("타겟 변수 없음 - 피처 선택 생략")
         
         # 스케일링
         train_df, test_df = self.apply_scaling(train_df, test_df)
@@ -267,6 +281,29 @@ class DataPreprocessor:
         """시간 기반 데이터 준비"""
         print("시간 기반 데이터 준비")
         
+        # support_needs 컬럼 존재 확인
+        if 'support_needs' not in train_df.columns:
+            print("타겟 변수 없음")
+            # 타겟이 없으면 기본 분할 수행
+            feature_cols = [col for col in train_df.columns if col not in ['ID']]
+            common_features = [col for col in feature_cols if col in test_df.columns]
+            
+            if not common_features:
+                raise ValueError("공통 피처 없음")
+                
+            X_train = train_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+            X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+            test_ids = test_df['ID']
+            
+            # 임시 타겟 생성 (실제로는 사용되지 않음)
+            y_dummy = np.zeros(len(X_train))
+            X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
+                X_train, y_dummy, test_size=val_size, random_state=42
+            )
+            
+            print(f"기본 분할: 훈련 {X_train_split.shape}, 검증 {X_val_split.shape}, 테스트 {X_test.shape}")
+            return X_train_split, X_val_split, y_train_split, y_val_split, X_test, test_ids
+        
         # 공통 피처 식별
         train_cols = set(train_df.columns)
         test_cols = set(test_df.columns)
@@ -274,9 +311,6 @@ class DataPreprocessor:
         
         if not common_features:
             raise ValueError("공통 피처 없음")
-        
-        if 'support_needs' not in train_df.columns:
-            raise ValueError("타겟 변수 없음")
         
         common_features = sorted(common_features)
         

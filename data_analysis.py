@@ -421,7 +421,8 @@ class DataAnalyzer:
         # 유효성 점수
         validity_score = 1.0
         if 'support_needs' in self.train_df.columns:
-            invalid_ratio = ~self.train_df['support_needs'].isin([0, 1, 2]).mean()
+            valid_mask = self.train_df['support_needs'].isin([0, 1, 2])
+            invalid_ratio = 1 - valid_mask.mean()
             validity_score = 1 - invalid_ratio
         
         quality_metrics['validity'] = validity_score
