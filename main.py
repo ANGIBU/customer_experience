@@ -594,9 +594,8 @@ class AISystem:
                     print(f"최고 모델: {mt['best_model']}")
                 
                 if mt['target_achieved']:
-                    print("✓ 목표 성능 달성")
+                    print("목표 정확도 달성 ✓")
                 else:
-                    print("✗ 목표 성능 미달")
                     gap = self.target_accuracy - mt['best_cv_score']
                     print(f"  성능 격차: {gap:.4f}")
             
