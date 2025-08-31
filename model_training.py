@@ -31,8 +31,10 @@ class ModelTrainer:
         
     def calculate_class_weights(self, y_train):
         """클래스 가중치 계산"""
-        class_counts = np.bincount(y_train)
-        total_samples = len(y_train)
+        y_train_array = np.array(y_train) if hasattr(y_train, '__iter__') else y_train
+        
+        class_counts = np.bincount(y_train_array)
+        total_samples = len(y_train_array)
         
         weights = {}
         for i, count in enumerate(class_counts):
@@ -45,6 +47,25 @@ class ModelTrainer:
         
         self.class_weights = weights
         return weights
+    
+    def safe_data_conversion(self, X, y=None):
+        """안전한 데이터 변환"""
+        if hasattr(X, 'values'):
+            X_array = X.values
+        else:
+            X_array = np.array(X)
+        
+        X_clean = np.nan_to_num(X_array, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        if y is not None:
+            if hasattr(y, 'values'):
+                y_array = y.values
+            else:
+                y_array = np.array(y)
+            y_clean = np.nan_to_num(y_array, nan=0)
+            return X_clean, y_clean
+        
+        return X_clean
     
     def prepare_training_data(self):
         """학습 데이터 준비"""
@@ -90,8 +111,11 @@ class ModelTrainer:
             'class_weight': 'balanced'
         }
         
-        train_data = lgb.Dataset(X_train, label=y_train, feature_name=self.feature_names)
-        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
+        
+        train_data = lgb.Dataset(X_train_clean, label=y_train_clean, feature_name=self.feature_names)
+        val_data = lgb.Dataset(X_val_clean, label=y_val_clean, reference=train_data)
         
         model = lgb.train(
             lgb_params,
@@ -101,9 +125,9 @@ class ModelTrainer:
             callbacks=[lgb.early_stopping(80), lgb.log_evaluation(0)]
         )
         
-        y_pred = model.predict(X_val)
+        y_pred = model.predict(X_val_clean)
         y_pred_class = np.argmax(y_pred, axis=1)
-        accuracy = accuracy_score(y_val, y_pred_class)
+        accuracy = accuracy_score(y_val_clean, y_pred_class)
         
         print(f"LightGBM 검증 정확도: {accuracy:.4f}")
         
@@ -131,8 +155,11 @@ class ModelTrainer:
             'verbosity': 0
         }
         
-        train_data = xgb.DMatrix(X_train.values, label=y_train, feature_names=self.feature_names)
-        val_data = xgb.DMatrix(X_val.values, label=y_val, feature_names=self.feature_names)
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
+        
+        train_data = xgb.DMatrix(X_train_clean, label=y_train_clean, feature_names=self.feature_names)
+        val_data = xgb.DMatrix(X_val_clean, label=y_val_clean, feature_names=self.feature_names)
         
         model = xgb.train(
             params,
@@ -145,7 +172,7 @@ class ModelTrainer:
         
         y_pred = model.predict(val_data)
         y_pred_class = np.argmax(y_pred, axis=1)
-        accuracy = accuracy_score(y_val, y_pred_class)
+        accuracy = accuracy_score(y_val_clean, y_pred_class)
         
         print(f"XGBoost 검증 정확도: {accuracy:.4f}")
         
@@ -156,41 +183,56 @@ class ModelTrainer:
         """CatBoost 수정 학습"""
         print("CatBoost 학습")
         
-        X_train_clean = X_train.fillna(0).replace([np.inf, -np.inf], 0)
-        X_val_clean = X_val.fillna(0).replace([np.inf, -np.inf], 0)
-        
-        model = CatBoostClassifier(
-            iterations=2000,
-            learning_rate=0.03,
-            depth=8,
-            l2_leaf_reg=5,
-            bootstrap_type='Bernoulli',
-            subsample=0.75,
-            colsample_bylevel=0.85,
-            random_seed=42,
-            verbose=0,
-            early_stopping_rounds=80,
-            class_weights=list(self.class_weights.values())
-        )
-        
-        model.fit(
-            X_train_clean.values, y_train,
-            eval_set=(X_val_clean.values, y_val),
-            use_best_model=True,
-            verbose=False
-        )
-        
-        y_pred = model.predict(X_val.values)
-        accuracy = accuracy_score(y_val, y_pred)
-        
-        print(f"CatBoost 검증 정확도: {accuracy:.4f}")
-        
-        self.models['catboost'] = model
-        return model, accuracy
+        try:
+            X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+            X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
+            
+            if self.class_weights is None:
+                self.calculate_class_weights(y_train_clean)
+            
+            class_weights_list = [self.class_weights.get(i, 1.0) for i in range(3)]
+            
+            model = CatBoostClassifier(
+                iterations=1500,
+                learning_rate=0.05,
+                depth=6,
+                l2_leaf_reg=3,
+                bootstrap_type='Bayesian',
+                subsample=0.8,
+                colsample_bylevel=0.8,
+                random_seed=42,
+                verbose=0,
+                early_stopping_rounds=100,
+                class_weights=class_weights_list,
+                task_type='CPU',
+                thread_count=-1
+            )
+            
+            model.fit(
+                X_train_clean, y_train_clean,
+                eval_set=(X_val_clean, y_val_clean),
+                use_best_model=True,
+                verbose=False
+            )
+            
+            y_pred = model.predict(X_val_clean)
+            accuracy = accuracy_score(y_val_clean, y_pred)
+            
+            print(f"CatBoost 검증 정확도: {accuracy:.4f}")
+            
+            self.models['catboost'] = model
+            return model, accuracy
+            
+        except Exception as e:
+            print(f"CatBoost 학습 실패: {e}")
+            return None, 0.0
     
     def train_random_forest_optimized(self, X_train, y_train, X_val, y_val):
         """Random Forest 최적화 학습"""
         print("Random Forest 학습")
+        
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = RandomForestClassifier(
             n_estimators=500,
@@ -205,10 +247,10 @@ class ModelTrainer:
             max_samples=0.8
         )
         
-        model.fit(X_train.values, y_train)
+        model.fit(X_train_clean, y_train_clean)
         
-        y_pred = model.predict(X_val.values)
-        accuracy = accuracy_score(y_val, y_pred)
+        y_pred = model.predict(X_val_clean)
+        accuracy = accuracy_score(y_val_clean, y_pred)
         
         print(f"Random Forest 검증 정확도: {accuracy:.4f}")
         
@@ -218,6 +260,9 @@ class ModelTrainer:
     def train_extra_trees_optimized(self, X_train, y_train, X_val, y_val):
         """Extra Trees 최적화 학습"""
         print("Extra Trees 학습")
+        
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = ExtraTreesClassifier(
             n_estimators=500,
@@ -231,10 +276,10 @@ class ModelTrainer:
             bootstrap=True
         )
         
-        model.fit(X_train.values, y_train)
+        model.fit(X_train_clean, y_train_clean)
         
-        y_pred = model.predict(X_val.values)
-        accuracy = accuracy_score(y_val, y_pred)
+        y_pred = model.predict(X_val_clean)
+        accuracy = accuracy_score(y_val_clean, y_pred)
         
         print(f"Extra Trees 검증 정확도: {accuracy:.4f}")
         
@@ -244,6 +289,9 @@ class ModelTrainer:
     def train_neural_network_optimized(self, X_train, y_train, X_val, y_val):
         """신경망 최적화 학습"""
         print("Neural Network 학습")
+        
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = MLPClassifier(
             hidden_layer_sizes=(256, 128, 64),
@@ -261,10 +309,10 @@ class ModelTrainer:
             beta_2=0.999
         )
         
-        model.fit(X_train.values, y_train)
+        model.fit(X_train_clean, y_train_clean)
         
-        y_pred = model.predict(X_val.values)
-        accuracy = accuracy_score(y_val, y_pred)
+        y_pred = model.predict(X_val_clean)
+        accuracy = accuracy_score(y_val_clean, y_pred)
         
         print(f"Neural Network 검증 정확도: {accuracy:.4f}")
         print(f"반복 횟수: {model.n_iter_}")
@@ -276,8 +324,11 @@ class ModelTrainer:
         """클래스 1 전문 모델"""
         print("클래스 1 전문 모델 학습")
         
-        y_binary_train = (y_train == 1).astype(int)
-        y_binary_val = (y_val == 1).astype(int)
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
+        
+        y_binary_train = (y_train_clean == 1).astype(int)
+        y_binary_val = (y_val_clean == 1).astype(int)
         
         model = lgb.LGBMClassifier(
             objective='binary',
@@ -296,13 +347,13 @@ class ModelTrainer:
         )
         
         model.fit(
-            X_train, y_binary_train,
-            eval_set=[(X_val, y_binary_val)],
+            X_train_clean, y_binary_train,
+            eval_set=[(X_val_clean, y_binary_val)],
             eval_metric='binary_logloss',
             callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
         )
         
-        y_pred_binary = model.predict(X_val)
+        y_pred_binary = model.predict(X_val_clean)
         accuracy = accuracy_score(y_binary_val, y_pred_binary)
         
         print(f"클래스 1 전문 모델 정확도: {accuracy:.4f}")
@@ -317,21 +368,25 @@ class ModelTrainer:
         base_models = ['lightgbm', 'xgboost', 'catboost', 'random_forest']
         valid_models = [name for name in base_models if name in self.models]
         
-        if len(valid_models) < 3:
+        if len(valid_models) < 2:
             print("스태킹을 위한 모델이 부족합니다")
             return None, 0.0
         
         try:
-            skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-            meta_features_train = np.zeros((len(X_train), len(valid_models) * 3))
-            meta_features_val = np.zeros((len(X_val), len(valid_models) * 3))
+            X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+            X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
             
-            for fold, (train_idx, oof_idx) in enumerate(skf.split(X_train, y_train)):
-                X_fold_train = X_train.iloc[train_idx]
-                y_fold_train = y_train.iloc[train_idx]
-                X_fold_oof = X_train.iloc[oof_idx]
+            skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+            meta_features_train = []
+            meta_features_val = []
+            
+            for fold, (train_idx, oof_idx) in enumerate(skf.split(X_train_clean, y_train_clean)):
+                X_fold_train = X_train_clean[train_idx]
+                y_fold_train = y_train_clean[train_idx]
+                X_fold_oof = X_train_clean[oof_idx]
                 
-                col_idx = 0
+                fold_predictions = []
+                val_fold_predictions = []
                 
                 for model_name in valid_models:
                     try:
@@ -341,83 +396,106 @@ class ModelTrainer:
                                 'verbose': -1, 'random_state': 42,
                                 'num_leaves': 31, 'learning_rate': 0.05
                             }
-                            train_data = lgb.Dataset(X_fold_train.values, label=y_fold_train)
+                            train_data = lgb.Dataset(X_fold_train, label=y_fold_train)
                             fold_model = lgb.train(lgb_params, train_data, num_boost_round=200)
-                            oof_pred = fold_model.predict(X_fold_oof.values)
-                            val_pred = fold_model.predict(X_val.values)
+                            oof_pred = fold_model.predict(X_fold_oof)
+                            val_pred = fold_model.predict(X_val_clean)
                             
                         elif model_name == 'xgboost':
                             xgb_params = {
                                 'objective': 'multi:softprob', 'num_class': 3,
                                 'random_state': 42, 'verbosity': 0
                             }
-                            train_data = xgb.DMatrix(X_fold_train.values, label=y_fold_train)
+                            train_data = xgb.DMatrix(X_fold_train, label=y_fold_train)
                             fold_model = xgb.train(xgb_params, train_data, num_boost_round=200)
-                            oof_pred = fold_model.predict(xgb.DMatrix(X_fold_oof.values))
-                            val_pred = fold_model.predict(xgb.DMatrix(X_val.values))
+                            oof_pred = fold_model.predict(xgb.DMatrix(X_fold_oof))
+                            val_pred = fold_model.predict(xgb.DMatrix(X_val_clean))
                             
                         elif model_name == 'catboost':
+                            class_weights_list = [self.class_weights.get(i, 1.0) for i in range(3)]
                             fold_model = CatBoostClassifier(
-                                iterations=200, random_seed=42, verbose=0
+                                iterations=200, 
+                                random_seed=42, 
+                                verbose=0,
+                                class_weights=class_weights_list,
+                                task_type='CPU'
                             )
-                            fold_model.fit(X_fold_train.values, y_fold_train, verbose=False)
-                            oof_pred = fold_model.predict_proba(X_fold_oof.values)
-                            val_pred = fold_model.predict_proba(X_val.values)
+                            fold_model.fit(X_fold_train, y_fold_train, verbose=False)
+                            oof_pred = fold_model.predict_proba(X_fold_oof)
+                            val_pred = fold_model.predict_proba(X_val_clean)
                             
                         elif model_name == 'random_forest':
                             fold_model = RandomForestClassifier(
                                 n_estimators=200, random_state=42, n_jobs=-1,
                                 class_weight=self.class_weights
                             )
-                            fold_model.fit(X_fold_train.values, y_fold_train)
-                            oof_pred = fold_model.predict_proba(X_fold_oof.values)
-                            val_pred = fold_model.predict_proba(X_val.values)
+                            fold_model.fit(X_fold_train, y_fold_train)
+                            oof_pred = fold_model.predict_proba(X_fold_oof)
+                            val_pred = fold_model.predict_proba(X_val_clean)
                         
                         else:
                             continue
                         
-                        meta_features_train[oof_idx, col_idx:col_idx+3] = oof_pred
-                        
                         if fold == 0:
-                            meta_features_val[:, col_idx:col_idx+3] = val_pred / skf.n_splits
+                            fold_predictions.append(oof_pred)
+                            val_fold_predictions.append(val_pred)
                         else:
-                            meta_features_val[:, col_idx:col_idx+3] += val_pred / skf.n_splits
-                        
-                        col_idx += 3
+                            fold_predictions.append(oof_pred)
+                            val_fold_predictions.append(val_pred)
                         
                     except Exception as e:
                         print(f"폴드 {fold} {model_name} 오류: {e}")
-                        col_idx += 3
                         continue
+                
+                if fold == 0:
+                    if fold_predictions:
+                        meta_features_train = [np.zeros((len(X_train_clean), pred.shape[1])) for pred in fold_predictions]
+                        meta_features_val = [np.zeros((len(X_val_clean), pred.shape[1])) for pred in val_fold_predictions]
+                
+                for i, pred in enumerate(fold_predictions):
+                    if i < len(meta_features_train):
+                        train_start = len(train_idx) * fold // 3
+                        train_end = train_start + len(oof_idx)
+                        if train_end <= len(meta_features_train[i]):
+                            try:
+                                oof_start = fold * len(oof_idx) // 3
+                                oof_end = oof_start + len(oof_idx)
+                                if oof_end <= len(meta_features_train[i]):
+                                    meta_features_train[i][oof_start:oof_end] = pred
+                            except:
+                                pass
+                
+                for i, pred in enumerate(val_fold_predictions):
+                    if i < len(meta_features_val):
+                        meta_features_val[i] += pred / skf.n_splits
             
-            actual_features = col_idx
-            meta_features_train = meta_features_train[:, :actual_features]
-            meta_features_val = meta_features_val[:, :actual_features]
-            
-            if actual_features == 0:
-                print("메타 피처 생성 실패")
+            if meta_features_train and meta_features_val:
+                meta_train = np.hstack(meta_features_train)
+                meta_val = np.hstack(meta_features_val)
+                
+                self.meta_model = LogisticRegression(
+                    multi_class='multinomial',
+                    solver='lbfgs',
+                    random_state=42,
+                    max_iter=2000,
+                    class_weight=self.class_weights,
+                    C=0.5
+                )
+                
+                self.meta_model.fit(meta_train, y_train_clean)
+                
+                stacking_pred_proba = self.meta_model.predict_proba(meta_val)
+                stacking_pred = np.argmax(stacking_pred_proba, axis=1)
+                stacking_accuracy = accuracy_score(y_val_clean, stacking_pred)
+                
+                print(f"스태킹 검증 정확도: {stacking_accuracy:.4f}")
+                print(f"메타 피처 수: {meta_train.shape[1]}")
+                
+                self.models['stacking'] = self.meta_model
+                return self.meta_model, stacking_accuracy
+            else:
+                print("스태킹 메타 피처 생성 실패")
                 return None, 0.0
-            
-            self.meta_model = LogisticRegression(
-                multi_class='multinomial',
-                solver='lbfgs',
-                random_state=42,
-                max_iter=2000,
-                class_weight=self.class_weights,
-                C=0.5
-            )
-            
-            self.meta_model.fit(meta_features_train, y_train)
-            
-            stacking_pred_proba = self.meta_model.predict_proba(meta_features_val)
-            stacking_pred = np.argmax(stacking_pred_proba, axis=1)
-            stacking_accuracy = accuracy_score(y_val, stacking_pred)
-            
-            print(f"스태킹 검증 정확도: {stacking_accuracy:.4f}")
-            print(f"메타 피처 수: {actual_features}")
-            
-            self.models['stacking'] = self.meta_model
-            return self.meta_model, stacking_accuracy
             
         except Exception as e:
             print(f"스태킹 모델 생성 오류: {e}")
@@ -426,6 +504,9 @@ class ModelTrainer:
     def train_calibrated_models(self, X_train, y_train, X_val, y_val):
         """보정 모델 학습"""
         print("보정 모델 학습")
+        
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         calibrated_models = {}
         
@@ -446,10 +527,10 @@ class ModelTrainer:
                     base_model, method='isotonic', cv=3
                 )
                 
-                calibrated_model.fit(X_train.values, y_train)
+                calibrated_model.fit(X_train_clean, y_train_clean)
                 
-                y_pred = calibrated_model.predict(X_val.values)
-                accuracy = accuracy_score(y_val, y_pred)
+                y_pred = calibrated_model.predict(X_val_clean)
+                accuracy = accuracy_score(y_val_clean, y_pred)
                 
                 print(f"{name} 검증 정확도: {accuracy:.4f}")
                 
@@ -484,12 +565,21 @@ class ModelTrainer:
                 train_idx = sorted_indices[:train_end]
                 val_idx = sorted_indices[val_start:val_end]
                 
-                X_train_fold = X.iloc[train_idx]
-                y_train_fold = y.iloc[train_idx]
-                X_val_fold = X.iloc[val_idx]
-                y_val_fold = y.iloc[val_idx]
-                
                 try:
+                    X_train_fold = X.iloc[train_idx]
+                    y_train_fold = y.iloc[train_idx]
+                    X_val_fold = X.iloc[val_idx]
+                    y_val_fold = y.iloc[val_idx]
+                    
+                    feature_cols = [col for col in X_train_fold.columns if col != 'temporal_id']
+                    
+                    X_train_clean, y_train_clean = self.safe_data_conversion(
+                        X_train_fold[feature_cols], y_train_fold
+                    )
+                    X_val_clean, y_val_clean = self.safe_data_conversion(
+                        X_val_fold[feature_cols], y_val_fold
+                    )
+                    
                     if model_type == 'lightgbm':
                         lgb_params = {
                             'objective': 'multiclass', 'num_class': 3, 
@@ -497,16 +587,15 @@ class ModelTrainer:
                             'num_leaves': 31, 'learning_rate': 0.05
                         }
                         
-                        feature_cols = [col for col in X_train_fold.columns if col != 'temporal_id']
-                        train_data = lgb.Dataset(X_train_fold[feature_cols].values, label=y_train_fold)
+                        train_data = lgb.Dataset(X_train_clean, label=y_train_clean)
                         model = lgb.train(lgb_params, train_data, num_boost_round=300)
-                        y_pred = model.predict(X_val_fold[feature_cols].values)
+                        y_pred = model.predict(X_val_clean)
                         y_pred_class = np.argmax(y_pred, axis=1)
                         
-                    accuracy = accuracy_score(y_val_fold, y_pred_class)
+                    accuracy = accuracy_score(y_val_clean, y_pred_class)
                     cv_scores.append(accuracy)
                     
-                    print(f"  Fold {fold + 1}: {accuracy:.4f}")
+                    print(f"  Fold {fold + 1}: 시간 기반 분할 적용")
                     
                 except Exception as e:
                     print(f"  Fold {fold + 1} 오류: {e}")
@@ -519,8 +608,8 @@ class ModelTrainer:
                 print(f"  Fold {fold + 1}: 시간 기반 분할 적용")
                 cv_scores.append(0.50)
         
-        mean_score = np.mean(cv_scores)
-        std_score = np.std(cv_scores)
+        mean_score = np.mean(cv_scores) if cv_scores else 0.0
+        std_score = np.std(cv_scores) if cv_scores else 0.0
         
         print(f"평균 CV 점수: {mean_score:.4f} (+/- {std_score:.4f})")
         
@@ -559,6 +648,8 @@ class ModelTrainer:
                     model.save_model(f'models/{name}_model.txt')
                 elif name == 'xgboost':
                     model.save_model(f'models/{name}_model.json')
+                elif name == 'catboost':
+                    model.save_model(f'models/{name}_model.pkl')
                 else:
                     joblib.dump(model, f'models/{name}_model.pkl')
                 
@@ -586,6 +677,9 @@ class ModelTrainer:
         if self.feature_names is None:
             self.feature_names = list(X_train.columns)
         
+        if self.class_weights is None:
+            self.calculate_class_weights(y_train)
+        
         model_results = {}
         
         try:
@@ -604,7 +698,10 @@ class ModelTrainer:
         
         try:
             cat_model, cat_acc = self.train_catboost_fixed(X_train, y_train, X_val, y_val)
-            model_results['catboost'] = cat_acc
+            if cat_model is not None:
+                model_results['catboost'] = cat_acc
+            else:
+                model_results['catboost'] = 0.0
         except Exception as e:
             print(f"CatBoost 학습 실패: {e}")
             model_results['catboost'] = 0.0
@@ -640,7 +737,8 @@ class ModelTrainer:
         try:
             calibrated_models = self.train_calibrated_models(X_train, y_train, X_val, y_val)
             for name, model in calibrated_models.items():
-                y_pred = model.predict(X_val.values)
+                X_val_clean = self.safe_data_conversion(X_val)
+                y_pred = model.predict(X_val_clean)
                 accuracy = accuracy_score(y_val, y_pred)
                 model_results[name] = accuracy
         except Exception as e:
@@ -667,6 +765,9 @@ class ModelTrainer:
         for model_name, accuracy in model_results.items():
             if accuracy > 0:
                 print(f"{model_name}: {accuracy:.4f}")
+        
+        best_model = max(model_results.items(), key=lambda x: x[1])
+        print(f"최고 성능: {best_model[1]:.4f} ({best_model[0]})")
 
 def main():
     trainer = ModelTrainer()
