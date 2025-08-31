@@ -12,7 +12,7 @@ warnings.filterwarnings('ignore')
 class ValidationSystem:
     def __init__(self):
         self.validation_results = {}
-        self.gap_ratio = 0.03
+        self.gap_ratio = 0.10
         
     def safe_data_conversion(self, X, y=None):
         """안전한 데이터 변환"""
@@ -69,7 +69,7 @@ class ValidationSystem:
                     overlap_count = len([x for x in train_nums if x >= test_min])
                     overlap_ratio = overlap_count / len(train_nums)
                     
-                    if overlap_ratio > 0.03:
+                    if overlap_ratio > 0.05:
                         issues.append(f"temporal_overlap: {overlap_ratio:.3f}")
         
         return len(issues) == 0, issues
@@ -89,16 +89,16 @@ class ValidationSystem:
             else:
                 class_weights[i] = 1.0
         
-        # 불균형 보정
-        class_weights[1] *= 1.2
-        class_weights[2] *= 1.05
+        # 보수적 불균형 보정
+        class_weights[1] *= 1.05
+        class_weights[2] *= 1.02
         
         model = RandomForestClassifier(
-            n_estimators=300,
-            max_depth=10,
-            min_samples_split=12,
-            min_samples_leaf=6,
-            max_features=0.8,
+            n_estimators=200,
+            max_depth=8,
+            min_samples_split=10,
+            min_samples_leaf=5,
+            max_features=0.7,
             bootstrap=True,
             class_weight=class_weights,
             random_state=42,
@@ -108,8 +108,8 @@ class ValidationSystem:
         model.fit(X_train_clean, y_train_clean)
         return model
     
-    def gap_walk_forward_cv(self, X, y, n_splits=5):
-        """갭이 있는 워크포워드 교차검증"""
+    def purged_walk_forward_cv(self, X, y, n_splits=5):
+        """Purged 워크포워드 교차검증"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
         # temporal_id 기반 분할
@@ -122,7 +122,7 @@ class ValidationSystem:
             
             # 최소 폴드 크기 확보
             min_fold_size = total_samples // (n_splits * 2)
-            if min_fold_size < 1000:
+            if min_fold_size < 2000:
                 return self.standard_cv(X, y, n_splits)
             
             fold_scores = []
@@ -130,7 +130,7 @@ class ValidationSystem:
             
             for fold in range(n_splits):
                 # 동적 윈도우 크기
-                window_size = min_fold_size + (fold * min_fold_size // 2)
+                window_size = min_fold_size + (fold * min_fold_size // 3)
                 
                 train_start = fold * min_fold_size
                 train_end = train_start + window_size
@@ -144,7 +144,7 @@ class ValidationSystem:
                 train_idx = sorted_indices[train_start:train_end]
                 val_idx = sorted_indices[val_start:val_end]
                 
-                if len(train_idx) < 500 or len(val_idx) < 200:
+                if len(train_idx) < 1000 or len(val_idx) < 400:
                     continue
                 
                 X_train_fold = np.delete(X_clean[train_idx], temporal_col_idx, axis=1)
@@ -166,7 +166,7 @@ class ValidationSystem:
                     'fold_scores': fold_scores,
                     'mean_score': mean_score,
                     'std_score': std_score,
-                    'cv_type': 'gap_walk_forward'
+                    'cv_type': 'purged_walk_forward'
                 }
             else:
                 return self.standard_cv(X, y, n_splits)
@@ -204,8 +204,8 @@ class ValidationSystem:
             'cv_type': 'stratified_kfold'
         }
     
-    def holdout_validation_detailed(self, X_train, y_train, X_val, y_val):
-        """상세 홀드아웃 검증"""
+    def holdout_validation(self, X_train, y_train, X_val, y_val):
+        """홀드아웃 검증"""
         if any(data is None for data in [X_train, y_train, X_val, y_val]):
             return self.get_default_holdout_results()
         
@@ -251,8 +251,8 @@ class ValidationSystem:
             'total_samples': len(y_val_clean)
         }
     
-    def stability_test_comprehensive(self, X, y, n_runs=8):
-        """포괄적 안정성 테스트"""
+    def stability_test(self, X, y, n_runs=5):
+        """안정성 테스트"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
         # temporal_id 제거
@@ -266,7 +266,6 @@ class ValidationSystem:
         
         accuracy_scores = []
         f1_scores = []
-        class_balance_scores = []
         
         for run in range(n_runs):
             try:
@@ -283,13 +282,8 @@ class ValidationSystem:
                 accuracy = accuracy_score(y_val, y_pred)
                 f1 = f1_score(y_val, y_pred, average='macro')
                 
-                # 클래스 균형 점수
-                class_f1_scores = f1_score(y_val, y_pred, average=None)
-                class_balance = 1 - np.std(class_f1_scores) if len(class_f1_scores) > 1 else 0
-                
                 accuracy_scores.append(accuracy)
                 f1_scores.append(f1)
-                class_balance_scores.append(class_balance)
                 
             except Exception:
                 continue
@@ -302,12 +296,11 @@ class ValidationSystem:
         std_accuracy = np.std(accuracy_scores)
         mean_f1 = np.mean(f1_scores)
         std_f1 = np.std(f1_scores)
-        mean_balance = np.mean(class_balance_scores)
         
         # 안정성 점수
         accuracy_stability = max(0, 1 - (std_accuracy / mean_accuracy)) if mean_accuracy > 0 else 0
         f1_stability = max(0, 1 - (std_f1 / mean_f1)) if mean_f1 > 0 else 0
-        overall_stability = (accuracy_stability + f1_stability + mean_balance) / 3
+        overall_stability = (accuracy_stability + f1_stability) / 2
         
         return {
             'accuracy_scores': accuracy_scores,
@@ -318,7 +311,6 @@ class ValidationSystem:
             'std_f1': std_f1,
             'accuracy_stability': accuracy_stability,
             'f1_stability': f1_stability,
-            'class_balance': mean_balance,
             'overall_stability': overall_stability,
             'n_runs': len(accuracy_scores)
         }
@@ -338,8 +330,8 @@ class ValidationSystem:
             max_importance = np.max(importances)
             
             # 상위 피처 비율
-            top_10_ratio = np.sum(np.sort(importances)[-10:]) / np.sum(importances)
-            top_5_ratio = np.sum(np.sort(importances)[-5:]) / np.sum(importances)
+            top_10_ratio = np.sum(np.sort(importances)[-10:]) / np.sum(importances) if len(importances) >= 10 else 1.0
+            top_5_ratio = np.sum(np.sort(importances)[-5:]) / np.sum(importances) if len(importances) >= 5 else 1.0
             
             # 중요도 집중도
             concentration = 1 - (np.sum(importances > mean_importance) / len(importances))
@@ -382,7 +374,6 @@ class ValidationSystem:
             'std_f1': 0.0,
             'accuracy_stability': 0.0,
             'f1_stability': 0.0,
-            'class_balance': 0.0,
             'overall_stability': 0.0,
             'n_runs': 0
         }
@@ -390,31 +381,31 @@ class ValidationSystem:
     def validate_system(self, X_train, y_train, X_val=None, y_val=None):
         """검증 시스템 실행"""
         if X_train is None or y_train is None or len(X_train) == 0:
-            return self.get_comprehensive_default_results()
+            return self.get_default_results()
         
         X_clean, y_clean = self.safe_data_conversion(X_train, y_train)
         
         # 홀드아웃 검증
         if X_val is not None and y_val is not None:
-            holdout_results = self.holdout_validation_detailed(X_train, y_train, X_val, y_val)
+            holdout_results = self.holdout_validation(X_train, y_train, X_val, y_val)
         else:
             # 데이터 분할해서 홀드아웃
             from sklearn.model_selection import train_test_split
             try:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.2, random_state=42, stratify=y_clean
+                    X_clean, y_clean, test_size=0.22, random_state=42, stratify=y_clean
                 )
             except:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.2, random_state=42
+                    X_clean, y_clean, test_size=0.22, random_state=42
                 )
-            holdout_results = self.holdout_validation_detailed(X_train_split, y_train_split, X_val_split, y_val_split)
+            holdout_results = self.holdout_validation(X_train_split, y_train_split, X_val_split, y_val_split)
         
         # 교차검증
-        cv_results = self.gap_walk_forward_cv(X_train, y_train)
+        cv_results = self.purged_walk_forward_cv(X_train, y_train)
         
         # 안정성 테스트
-        stability_results = self.stability_test_comprehensive(X_train, y_train)
+        stability_results = self.stability_test(X_train, y_train)
         
         # 피처 중요도 검증
         feature_results = self.feature_importance_validation(X_train, y_train)
@@ -424,11 +415,11 @@ class ValidationSystem:
         cv_score = cv_results.get('mean_score', 0.0)
         stability_score = stability_results.get('overall_stability', 0.0)
         
-        # 가중 평균으로 종합 점수
+        # 보수적 가중 평균
         overall_score = (
-            holdout_score * 0.4 +
-            cv_score * 0.4 +
-            stability_score * 0.2
+            holdout_score * 0.35 +
+            cv_score * 0.45 +
+            stability_score * 0.20
         )
         
         self.validation_results = {
@@ -446,8 +437,8 @@ class ValidationSystem:
         
         return self.validation_results
     
-    def get_comprehensive_default_results(self):
-        """포괄적 기본 결과"""
+    def get_default_results(self):
+        """기본 결과"""
         return {
             'holdout': self.get_default_holdout_results(),
             'cross_validation': {'mean_score': 0.0, 'std_score': 0.0, 'fold_scores': [], 'cv_type': 'none'},

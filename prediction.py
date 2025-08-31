@@ -6,14 +6,9 @@ import pandas as pd
 import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostClassifier
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, ExtraTreesClassifier
-from sklearn.neural_network import MLPClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
 from sklearn.metrics import accuracy_score
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.isotonic import IsotonicRegression
 from scipy.special import softmax
-from scipy.optimize import minimize
 import joblib
 import warnings
 warnings.filterwarnings('ignore')
@@ -67,7 +62,7 @@ class PredictionSystem:
             if os.path.exists('models/feature_info.pkl'):
                 self.feature_info = joblib.load('models/feature_info.pkl')
                 self.feature_names = self.feature_info.get('feature_names', [])
-                self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 1.25, 2: 1.1})
+                self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 1.05, 2: 1.02})
                 self.ensemble_weights = self.feature_info.get('ensemble_weights', {})
             
             # 모델 파일 로드
@@ -76,10 +71,7 @@ class PredictionSystem:
                 ('xgboost', 'models/xgboost_model.json', 'xgb'),
                 ('catboost', 'models/catboost_model.pkl', 'pkl'),
                 ('random_forest', 'models/random_forest_model.pkl', 'pkl'),
-                ('gradient_boosting', 'models/gradient_boosting_model.pkl', 'pkl'),
-                ('extra_trees', 'models/extra_trees_model.pkl', 'pkl'),
-                ('neural_network', 'models/neural_network_model.pkl', 'pkl'),
-                ('stacking', 'models/stacking_model.pkl', 'pkl')
+                ('extra_trees', 'models/extra_trees_model.pkl', 'pkl')
             ]
             
             loaded_count = 0
@@ -134,22 +126,11 @@ class PredictionSystem:
         train_df = pd.read_csv('train.csv')
         test_df = pd.read_csv('test.csv')
         
-        # 데이터 분석에서 temporal_threshold 가져오기
-        try:
-            from data_analysis import DataAnalyzer
-            analyzer = DataAnalyzer()
-            analysis_results = analyzer.run_analysis()
-            temporal_threshold = analysis_results.get('temporal', {}).get('temporal_threshold')
-            temporal_info = analysis_results.get('temporal')
-        except:
-            temporal_threshold = None
-            temporal_info = None
-        
         # 피처 생성
-        train_processed, test_processed = self.feature_engineer.create_features(train_df, test_df, temporal_threshold)
+        train_processed, test_processed = self.feature_engineer.create_features(train_df, test_df)
         
         # 전처리
-        train_final, test_final = self.preprocessor.process_data(train_processed, test_processed, temporal_info)
+        train_final, test_final = self.preprocessor.process_data(train_processed, test_processed)
         
         # 피처 순서 맞춤
         if self.feature_names is not None:
@@ -203,41 +184,6 @@ class PredictionSystem:
                         pred_proba = pred_proba_multi
                     predictions[name] = pred_proba
                     
-                elif name == 'stacking':
-                    # 스태킹 앙상블 처리
-                    if isinstance(model, dict):
-                        base_models = model.get('base_models', [])
-                        meta_model = model.get('meta_model')
-                        base_model_objects = model.get('base_model_objects', {})
-                        
-                        if meta_model and base_model_objects:
-                            # 베이스 모델 예측 수집
-                            base_predictions = []
-                            
-                            for base_name in base_models:
-                                if base_name in base_model_objects:
-                                    base_model = base_model_objects[base_name]
-                                    
-                                    if base_name == 'lightgbm':
-                                        base_pred = base_model.predict(X_test_clean)
-                                        if base_pred.ndim == 2 and base_pred.shape[1] == 3:
-                                            base_predictions.append(base_pred)
-                                    elif base_name == 'xgboost':
-                                        xgb_test = xgb.DMatrix(X_test_clean, feature_names=self.feature_names)
-                                        base_pred = base_model.predict(xgb_test)
-                                        if base_pred.ndim == 2 and base_pred.shape[1] == 3:
-                                            base_predictions.append(base_pred)
-                                    else:
-                                        if hasattr(base_model, 'predict_proba'):
-                                            base_pred = base_model.predict_proba(X_test_clean)
-                                            if base_pred.shape[1] == 3:
-                                                base_predictions.append(base_pred)
-                            
-                            if base_predictions:
-                                meta_X = np.hstack(base_predictions)
-                                pred_proba = meta_model.predict_proba(meta_X)
-                                predictions[name] = pred_proba
-                    
                 else:
                     if hasattr(model, 'predict_proba'):
                         pred_proba = model.predict_proba(X_test_clean)
@@ -258,8 +204,8 @@ class PredictionSystem:
         
         return predictions
     
-    def optimize_ensemble_weights_dynamic(self, predictions):
-        """동적 앙상블 가중치 최적화"""
+    def calculate_ensemble_weights(self, predictions):
+        """앙상블 가중치 계산"""
         if not predictions or len(predictions) < 2:
             return None
         
@@ -271,7 +217,7 @@ class PredictionSystem:
                 if model_name in self.ensemble_weights:
                     weights[model_name] = self.ensemble_weights[model_name]
                 else:
-                    weights[model_name] = 0.1  # 기본 가중치
+                    weights[model_name] = 0.1
                 total_weight += weights[model_name]
             
             # 정규화
@@ -284,13 +230,10 @@ class PredictionSystem:
         # 기본 성능 기반 가중치
         default_weights = {
             'lightgbm': 0.25,
-            'xgboost': 0.22,
-            'catboost': 0.20,
-            'stacking': 0.15,
-            'random_forest': 0.08,
-            'gradient_boosting': 0.05,
-            'extra_trees': 0.03,
-            'neural_network': 0.02
+            'xgboost': 0.23,
+            'catboost': 0.22,
+            'random_forest': 0.15,
+            'extra_trees': 0.15
         }
         
         available_models = list(predictions.keys())
@@ -311,12 +254,12 @@ class PredictionSystem:
         
         return weights
     
-    def bayesian_ensemble_prediction(self, predictions):
-        """베이지안 앙상블 예측"""
+    def simple_ensemble_prediction(self, predictions):
+        """단순 앙상블 예측"""
         if not predictions:
             return None
         
-        weights = self.optimize_ensemble_weights_dynamic(predictions)
+        weights = self.calculate_ensemble_weights(predictions)
         if not weights:
             return None
         
@@ -336,39 +279,12 @@ class PredictionSystem:
         
         return ensemble_proba
     
-    def apply_isotonic_calibration(self, pred_proba):
-        """Isotonic Regression 보정"""
+    def apply_calibration(self, pred_proba, temperature=1.05):
+        """확률 보정"""
         try:
-            # 클래스별 보정
-            calibrated_proba = pred_proba.copy()
-            
-            for cls in range(3):
-                class_proba = pred_proba[:, cls]
-                
-                # 단순 보정 (학습 데이터 없이)
-                # Platt scaling 근사
-                calibrated_class = 1 / (1 + np.exp(-5 * (class_proba - 0.5)))
-                calibrated_proba[:, cls] = calibrated_class
-            
-            # 재정규화
-            row_sums = calibrated_proba.sum(axis=1, keepdims=True)
-            calibrated_proba = calibrated_proba / row_sums
-            
-            return calibrated_proba
-            
-        except Exception:
-            return pred_proba
-    
-    def apply_temperature_scaling(self, pred_proba, temperature=1.1):
-        """Temperature scaling 보정"""
-        try:
-            # 로그 확률로 변환
-            log_proba = np.log(np.clip(pred_proba, 1e-7, 1-1e-7))
-            
             # Temperature scaling
+            log_proba = np.log(np.clip(pred_proba, 1e-7, 1-1e-7))
             scaled_log_proba = log_proba / temperature
-            
-            # Softmax 적용
             calibrated_proba = softmax(scaled_log_proba, axis=1)
             
             return calibrated_proba
@@ -379,7 +295,7 @@ class PredictionSystem:
     def apply_class_balance_adjustment(self, pred_proba):
         """클래스 균형 조정"""
         # 클래스별 조정 계수
-        class_adjustments = np.array([1.0, 1.05, 1.02])  # 클래스 1에 약간의 가중치
+        class_adjustments = np.array([1.0, 1.02, 1.01])
         
         adjusted_proba = pred_proba * class_adjustments[np.newaxis, :]
         
@@ -397,20 +313,16 @@ class PredictionSystem:
         if not individual_predictions:
             return self.create_fallback_predictions(X_test, test_ids)
         
-        # 베이지안 앙상블
-        ensemble_proba = self.bayesian_ensemble_prediction(individual_predictions)
+        # 단순 앙상블
+        ensemble_proba = self.simple_ensemble_prediction(individual_predictions)
         
         if ensemble_proba is None:
             return self.create_fallback_predictions(X_test, test_ids)
         
-        # 확률 보정 체인
-        # 1. Temperature scaling
-        calibrated_proba = self.apply_temperature_scaling(ensemble_proba, temperature=1.05)
+        # 확률 보정
+        calibrated_proba = self.apply_calibration(ensemble_proba, temperature=1.03)
         
-        # 2. Isotonic 보정
-        calibrated_proba = self.apply_isotonic_calibration(calibrated_proba)
-        
-        # 3. 클래스 균형 조정
+        # 클래스 균형 조정
         final_proba = self.apply_class_balance_adjustment(calibrated_proba)
         
         # 최종 예측
@@ -420,19 +332,18 @@ class PredictionSystem:
         pred_counts = np.bincount(predictions, minlength=3)
         total_preds = len(predictions)
         
-        # 클래스 0이 너무 많거나 클래스 1,2가 너무 적은 경우 조정
-        if pred_counts[0] > total_preds * 0.7:  # 클래스 0이 70% 이상
-            # 확률 상위 10%를 클래스 1로 변경
+        # 클래스 0이 너무 많은 경우 조정
+        if pred_counts[0] > total_preds * 0.65:
             class_1_proba = final_proba[:, 1]
-            top_10_percent = int(total_preds * 0.1)
-            top_indices = np.argsort(class_1_proba)[-top_10_percent:]
+            top_8_percent = int(total_preds * 0.08)
+            top_indices = np.argsort(class_1_proba)[-top_8_percent:]
             predictions[top_indices] = 1
         
-        if pred_counts[1] < total_preds * 0.1:  # 클래스 1이 10% 미만
-            # 확률 상위 5%를 클래스 1로 변경
+        # 클래스 1이 너무 적은 경우 조정
+        if pred_counts[1] < total_preds * 0.12:
             class_1_proba = final_proba[:, 1]
-            top_5_percent = int(total_preds * 0.05)
-            top_indices = np.argsort(class_1_proba)[-top_5_percent:]
+            top_4_percent = int(total_preds * 0.04)
+            top_indices = np.argsort(class_1_proba)[-top_4_percent:]
             predictions[top_indices] = 1
         
         # 제출 파일 생성
@@ -493,14 +404,14 @@ class PredictionSystem:
                     else:
                         class_weights[i] = 1.0
                 
-                class_weights[1] *= 1.25
+                class_weights[1] *= 1.05
             
             # 모델 학습
             model = RandomForestClassifier(
-                n_estimators=500,
-                max_depth=12,
-                min_samples_split=10,
-                min_samples_leaf=5,
+                n_estimators=300,
+                max_depth=10,
+                min_samples_split=8,
+                min_samples_leaf=4,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
@@ -512,7 +423,7 @@ class PredictionSystem:
             pred_proba = model.predict_proba(X_test_simple)
             
             # 확률 보정
-            calibrated_proba = self.apply_temperature_scaling(pred_proba, temperature=1.1)
+            calibrated_proba = self.apply_calibration(pred_proba, temperature=1.05)
             calibrated_proba = self.apply_class_balance_adjustment(calibrated_proba)
             
             predictions = np.argmax(calibrated_proba, axis=1)
@@ -530,7 +441,7 @@ class PredictionSystem:
         except Exception as e:
             # 최종 대체 (랜덤 예측)
             np.random.seed(42)
-            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.45, 0.35, 0.20])
+            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.5, 0.3, 0.2])
             
             submission_df = pd.DataFrame({
                 'ID': test_ids,
@@ -571,7 +482,7 @@ class PredictionSystem:
         """최종 예측 파이프라인"""
         # 모델 로드
         if not self.load_trained_models():
-            pass  # fallback으로 진행
+            pass
         
         try:
             X_test, test_ids = self.prepare_test_data()

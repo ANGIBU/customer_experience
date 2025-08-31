@@ -68,15 +68,13 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 시간적 분할점 계산
-            train_max = max(train_id_nums)
-            test_min = min(test_id_nums)
-            overlap_threshold = int(np.percentile(train_id_nums, 85))
+            # 보수적 시간적 분할점 계산
+            overlap_threshold = int(np.percentile(train_id_nums, 75))
             
             self.temporal_threshold = overlap_threshold
             
             # 안전 구간 계산
-            safe_indices = [i for i, tid in enumerate(train_id_nums) if tid > overlap_threshold]
+            safe_indices = [i for i, tid in enumerate(train_id_nums) if tid <= overlap_threshold]
             safe_ratio = len(safe_indices) / len(train_id_nums)
             
             return {
@@ -94,54 +92,17 @@ class DataAnalyzer:
         leakage_features = {}
         
         if 'after_interaction' in self.train_df.columns and 'support_needs' in self.train_df.columns:
-            # 클래스별 통계
-            class_stats = {}
-            for cls in [0, 1, 2]:
-                class_data = self.train_df[self.train_df['support_needs'] == cls]['after_interaction'].dropna()
-                if len(class_data) > 0:
-                    class_stats[cls] = {
-                        'mean': class_data.mean(),
-                        'std': class_data.std(),
-                        'count': len(class_data)
-                    }
-            
-            # 상관관계 분석
-            correlation = self.train_df[['after_interaction', 'support_needs']].corr().iloc[0, 1]
-            
-            # 상호정보량
-            after_clean = self.train_df['after_interaction'].fillna(0)
-            target_clean = self.train_df['support_needs']
-            mi_score = mutual_info_classif(after_clean.values.reshape(-1, 1), target_clean, random_state=42)[0]
-            
-            # 분리도 측정
-            if len(class_stats) >= 2:
-                means = [stats['mean'] for stats in class_stats.values()]
-                separation = max(means) - min(means)
-                
-                # 통계적 검정
-                groups = []
-                for cls in [0, 1, 2]:
-                    if cls in class_stats:
-                        group_data = self.train_df[self.train_df['support_needs'] == cls]['after_interaction'].dropna()
-                        groups.append(group_data)
-                
-                f_stat, p_value = stats.f_oneway(*groups) if len(groups) >= 2 else (0, 1)
-                
-                leakage_features['after_interaction'] = {
-                    'correlation': correlation,
-                    'mutual_info': mi_score,
-                    'class_separation': separation,
-                    'f_statistic': f_stat,
-                    'p_value': p_value,
-                    'class_stats': class_stats,
-                    'is_leakage': abs(correlation) > 0.15 or mi_score > 0.3 or p_value < 0.001
-                }
+            # 완전 제거 플래그 설정
+            leakage_features['after_interaction'] = {
+                'should_remove': True,
+                'reason': 'temporal_leakage_risk'
+            }
         
         return leakage_features
     
     def analyze_feature_stability(self):
         """피처 안정성 분석"""
-        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'after_interaction']
+        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         stability_results = {}
         
         for feature in numeric_features:
@@ -156,29 +117,10 @@ class DataAnalyzer:
                     # PSI 계산
                     psi_score = self.calculate_psi(train_vals, test_vals)
                     
-                    # 기본 통계량 비교
-                    train_stats = {
-                        'mean': train_vals.mean(),
-                        'std': train_vals.std(),
-                        'median': train_vals.median(),
-                        'q25': train_vals.quantile(0.25),
-                        'q75': train_vals.quantile(0.75)
-                    }
-                    
-                    test_stats = {
-                        'mean': test_vals.mean(),
-                        'std': test_vals.std(),
-                        'median': test_vals.median(),
-                        'q25': test_vals.quantile(0.25),
-                        'q75': test_vals.quantile(0.75)
-                    }
-                    
                     stability_results[feature] = {
                         'ks_statistic': ks_stat,
                         'ks_p_value': ks_p,
                         'psi_score': psi_score,
-                        'train_stats': train_stats,
-                        'test_stats': test_stats,
                         'is_stable': ks_stat < 0.05 and psi_score < 0.1
                     }
         
@@ -246,7 +188,6 @@ class DataAnalyzer:
                         'test_distribution': test_dist.to_dict(),
                         'chi2_statistic': chi2_stat,
                         'chi2_p_value': chi2_p,
-                        'common_categories': list(common_cats),
                         'is_stable': chi2_p > 0.01
                     }
         
@@ -363,14 +304,11 @@ def main():
         results = analyzer.run_analysis()
         
         if results:
-            print("데이터 분석 완료")
             return analyzer, results
         else:
-            print("데이터 분석 실패")
             return None, {}
             
     except Exception as e:
-        print(f"데이터 분석 오류: {e}")
         return None, {}
 
 if __name__ == "__main__":
