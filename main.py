@@ -44,7 +44,7 @@ class AISystem:
         return True
     
     def step1_data_analysis(self):
-        """1단계: 데이터 분석"""
+        """데이터 분석"""
         print("\n1단계: 데이터 분석")
         print("=" * 30)
         
@@ -57,17 +57,15 @@ class AISystem:
             # 시간적 누수 확인
             if 'temporal' in analysis_results:
                 temporal_info = analysis_results['temporal']
-                if temporal_info.get('temporal_overlap', False):
-                    overlap_ratio = temporal_info.get('overlap_ratio', 0)
-                    if overlap_ratio > 0.5:
-                        print(f"경고: 높은 시간적 겹침 {overlap_ratio:.1%}")
+                overlap_ratio = temporal_info.get('overlap_ratio', 0)
+                if overlap_ratio > 0.3:
+                    print(f"경고: 시간적 겹침 {overlap_ratio:.1%}")
             
-            # 누수 피처 확인
+            # 타겟 누수 확인
             if 'leakage' in analysis_results:
                 leakage_info = analysis_results['leakage']
                 if 'after_interaction' in leakage_info:
-                    leakage_risk = leakage_info['after_interaction'].get('leakage_risk', False)
-                    if leakage_risk:
+                    if leakage_info['after_interaction'].get('is_leakage', False):
                         print("경고: after_interaction 피처 누수 위험")
             
             print("데이터 분석 완료")
@@ -79,7 +77,7 @@ class AISystem:
             return False, None
     
     def step2_feature_engineering(self):
-        """2단계: 피처 생성"""
+        """피처 생성"""
         print("\n2단계: 피처 생성")
         print("=" * 30)
         
@@ -88,7 +86,7 @@ class AISystem:
             test_df = pd.read_csv('test.csv')
             
             if train_df.empty or test_df.empty:
-                print("데이터 파일이 비어있습니다")
+                print("데이터 파일 비어있음")
                 return False, None, None, None
             
             engineer = FeatureEngineer()
@@ -112,13 +110,13 @@ class AISystem:
             return False, None, None, None
     
     def step3_preprocessing(self, train_df, test_df):
-        """3단계: 데이터 전처리"""
+        """데이터 전처리"""
         print("\n3단계: 데이터 전처리")
         print("=" * 30)
         
         try:
             if train_df is None or test_df is None:
-                print("입력 데이터가 None입니다")
+                print("입력 데이터 None")
                 return False, None, None, None, None, None, None, None
             
             preprocessor = DataPreprocessor()
@@ -129,10 +127,10 @@ class AISystem:
                 return False, None, None, None, None, None, None, None
             
             if train_final.empty or test_final.empty:
-                print("전처리된 데이터가 비어있습니다")
+                print("전처리 데이터 비어있음")
                 return False, None, None, None, None, None, None, None
             
-            # 시간 기반 데이터 분할
+            # 시간 기반 분할
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal(
                 train_final, test_final
             )
@@ -142,7 +140,7 @@ class AISystem:
                 return False, None, None, None, None, None, None, None
             
             if len(X_train) == 0 or len(X_val) == 0:
-                print("분할된 데이터가 비어있습니다")
+                print("분할 데이터 비어있음")
                 return False, None, None, None, None, None, None, None
             
             self.results['preprocessing'] = {
@@ -159,17 +157,17 @@ class AISystem:
             return False, None, None, None, None, None, None, None
     
     def step4_validation(self, X_train, y_train):
-        """4단계: 검증 시스템"""
+        """검증 시스템"""
         print("\n4단계: 검증 시스템")
         print("=" * 30)
         
         try:
             if X_train is None or y_train is None:
-                print("검증할 데이터가 None입니다")
+                print("검증 데이터 None")
                 return False, None
             
             if len(X_train) == 0 or len(y_train) == 0:
-                print("검증할 데이터가 비어있습니다")
+                print("검증 데이터 비어있음")
                 return False, None
             
             validator = ValidationSystem()
@@ -193,17 +191,17 @@ class AISystem:
             return False, None
     
     def step5_model_training(self, X_train, X_val, y_train, y_val, engineer, preprocessor):
-        """5단계: 모델 학습"""
+        """모델 학습"""
         print("\n5단계: 모델 학습")
         print("=" * 30)
         
         try:
             if any(data is None for data in [X_train, X_val, y_train, y_val]):
-                print("모델 학습 데이터가 None입니다")
+                print("모델 학습 데이터 None")
                 return False, None
             
             if any(len(data) == 0 for data in [X_train, X_val, y_train, y_val]):
-                print("모델 학습 데이터가 비어있습니다")
+                print("모델 학습 데이터 비어있음")
                 return False, None
             
             trainer = ModelTrainer()
@@ -212,7 +210,7 @@ class AISystem:
             
             trainer.train_models(X_train, X_val, y_train, y_val, engineer, preprocessor)
             
-            # 최고 성능 확인
+            # 성능 확인
             best_score = 0.0
             best_model_name = None
             
@@ -229,8 +227,7 @@ class AISystem:
                             if y_pred.ndim == 2:
                                 y_pred_class = np.argmax(y_pred, axis=1)
                             else:
-                                y_pred_class = np.round(y_pred).astype(int)
-                                y_pred_class = np.clip(y_pred_class, 0, 2)
+                                y_pred_class = np.clip(np.round(y_pred).astype(int), 0, 2)
                                 
                         elif model_name == 'xgboost':
                             import xgboost as xgb
@@ -242,12 +239,14 @@ class AISystem:
                             if y_pred.ndim == 2:
                                 y_pred_class = np.argmax(y_pred, axis=1)
                             else:
-                                y_pred_class = np.round(y_pred).astype(int)
-                                y_pred_class = np.clip(y_pred_class, 0, 2)
+                                y_pred_class = np.clip(np.round(y_pred).astype(int), 0, 2)
                                 
                         elif model_name == 'catboost':
                             y_pred_class = model.predict(X_val_clean)
                             y_pred_class = np.clip(y_pred_class, 0, 2)
+                            
+                        elif model_name == 'stacking':
+                            continue
                             
                         else:
                             y_pred_class = model.predict(X_val_clean)
@@ -286,44 +285,42 @@ class AISystem:
             return False, None
     
     def step6_prediction(self):
-        """6단계: 예측 생성"""
+        """예측 생성"""
         print("\n6단계: 예측 생성")
         print("=" * 30)
         
         try:
             predictor = PredictionSystem()
-            submission_df = predictor.generate_predictions()
+            submission_df = predictor.generate_final_predictions()
             
             if submission_df is not None and not submission_df.empty:
                 unique_classes = submission_df['support_needs'].unique()
-                print(f"예측된 클래스: {sorted(unique_classes)}")
+                print(f"예측 클래스: {sorted(unique_classes)}")
                 
-                # 예측 다양성 확인
                 if len(unique_classes) >= 2:
                     self.results['prediction'] = {
                         'submission_shape': submission_df.shape,
                         'prediction_counts': submission_df['support_needs'].value_counts().to_dict(),
                         'unique_classes': len(unique_classes),
-                        'method': 'natural_ensemble'
+                        'method': 'bayesian_ensemble'
                     }
                     
                     print("예측 생성 완료")
                     return True, submission_df
                 else:
-                    print("예측 다양성 부족 - 대체 방법 실행")
+                    print("예측 다양성 부족")
                     return self.fallback_prediction()
             else:
-                print("예측 생성 실패 - 대체 방법 실행")
+                print("예측 생성 실패")
                 return self.fallback_prediction()
                 
         except Exception as e:
             print(f"예측 생성 오류: {e}")
-            print("대체 방법 실행")
             return self.fallback_prediction()
     
     def fallback_prediction(self):
-        """대체 예측 생성"""
-        print("대체 예측 모드 실행")
+        """대체 예측"""
+        print("대체 예측 실행")
         
         try:
             from sklearn.ensemble import RandomForestClassifier
@@ -332,7 +329,7 @@ class AISystem:
             train_df = pd.read_csv('train.csv')
             test_df = pd.read_csv('test.csv')
             
-            # 기본 피처만 사용
+            # 기본 피처 사용
             numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
             categorical_cols = ['gender', 'subscription_type']
             
@@ -356,7 +353,7 @@ class AISystem:
             y = train_processed['support_needs']
             X_test = test_processed[feature_cols].fillna(0)
             
-            # 클래스 가중치 계산
+            # 클래스 가중치
             class_counts = np.bincount(y)
             total_samples = len(y)
             class_weights = {}
@@ -367,12 +364,14 @@ class AISystem:
                 else:
                     class_weights[i] = 1.0
             
-            class_weights[1] *= 1.2
+            class_weights[1] *= 1.4
             
             # 모델 학습
             model = RandomForestClassifier(
-                n_estimators=300,
-                max_depth=12,
+                n_estimators=400,
+                max_depth=15,
+                min_samples_split=8,
+                min_samples_leaf=4,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
@@ -380,10 +379,23 @@ class AISystem:
             
             model.fit(X, y)
             
-            # 자연스러운 예측
-            predictions = model.predict(X_test)
+            # 예측
+            pred_proba = model.predict_proba(X_test)
             
-            # 제출 파일 생성
+            # 확률 보정
+            from scipy.special import softmax
+            temperature = 1.2
+            calibrated_logits = np.log(np.clip(pred_proba, 1e-7, 1-1e-7)) / temperature
+            calibrated_proba = softmax(calibrated_logits, axis=1)
+            
+            # 클래스 조정
+            class_adjustments = np.array([1.0, 1.15, 1.0])
+            adjusted_proba = calibrated_proba * class_adjustments[np.newaxis, :]
+            final_proba = adjusted_proba / adjusted_proba.sum(axis=1, keepdims=True)
+            
+            predictions = np.argmax(final_proba, axis=1)
+            
+            # 제출 파일
             submission_df = pd.DataFrame({
                 'ID': test_processed['ID'],
                 'support_needs': predictions.astype(int)
@@ -397,7 +409,7 @@ class AISystem:
             for cls in [0, 1, 2]:
                 count = pred_dist.get(cls, 0)
                 pct = count / len(submission_df) * 100
-                print(f"  클래스 {cls}: {count:,}개 ({pct:.1f}%)")
+                print(f"클래스 {cls}: {count:,}개 ({pct:.1f}%)")
             
             self.results['prediction'] = {
                 'submission_shape': submission_df.shape,
@@ -405,7 +417,7 @@ class AISystem:
                 'method': 'fallback_rf'
             }
             
-            print("대체 예측 완료: submission.csv")
+            print("대체 예측 완료")
             return True, submission_df
             
         except Exception as e:
@@ -413,7 +425,7 @@ class AISystem:
             return False, None
     
     def generate_report(self):
-        """성과 보고서 생성"""
+        """성과 보고서"""
         print("\n" + "=" * 50)
         print("최종 성과 보고서")
         print("=" * 50)
@@ -430,7 +442,7 @@ class AISystem:
             # 모델 학습 결과
             if 'model_training' in self.results:
                 mt = self.results['model_training']
-                print(f"학습 모델 수: {mt['models_count']}")
+                print(f"학습 모델: {mt['models_count']}개")
                 print(f"최고 성능: {mt['best_cv_score']:.4f}")
                 
                 if mt.get('best_model'):
@@ -456,7 +468,7 @@ class AISystem:
                 for cls in [0, 1, 2]:
                     count = pred['prediction_counts'].get(cls, 0)
                     pct = count / total_predictions * 100 if total_predictions > 0 else 0
-                    print(f"  클래스 {cls}: {pct:.1f}%")
+                    print(f"클래스 {cls}: {pct:.1f}%")
                 
                 if 'method' in pred:
                     print(f"예측 방법: {pred['method']}")
@@ -466,10 +478,10 @@ class AISystem:
             completed_steps = len(self.results)
             success_rate = completed_steps / total_steps * 100
             
-            print(f"\n단계별 완료율: {completed_steps}/{total_steps} ({success_rate:.1f}%)")
+            print(f"\n단계 완료율: {completed_steps}/{total_steps} ({success_rate:.1f}%)")
             
             if success_rate >= 83:
-                print("전체 파이프라인 성공")
+                print("파이프라인 성공")
             elif success_rate >= 67:
                 print("대부분 단계 성공")
             else:
@@ -489,43 +501,43 @@ class AISystem:
             # 1단계: 데이터 분석
             success, analyzer = self.step1_data_analysis()
             if not success:
-                print("1단계 실패 - 계속 진행")
+                print("1단계 실패")
             
             # 2단계: 피처 생성
             success, engineer, train_df, test_df = self.step2_feature_engineering()
             if not success or train_df is None or test_df is None:
-                print("2단계 실패 - 시스템 종료")
+                print("2단계 실패")
                 return False
             
             # 3단계: 전처리
             success, preprocessor, X_train, X_val, y_train, y_val, X_test, test_ids = self.step3_preprocessing(train_df, test_df)
             if not success or any(data is None for data in [X_train, X_val, y_train, y_val]):
-                print("3단계 실패 - 대체 예측 실행")
+                print("3단계 실패 - 대체 예측")
                 fallback_success, fallback_result = self.fallback_prediction()
                 if fallback_success:
                     self.generate_report()
                     return True
                 else:
-                    print("대체 예측도 실패 - 시스템 종료")
+                    print("대체 예측 실패")
                     return False
             
             # 4단계: 검증
             success, validator = self.step4_validation(X_train, y_train)
             if not success:
-                print("4단계 실패 - 계속 진행")
+                print("4단계 실패")
             
             # 5단계: 모델 학습
             success, trainer = self.step5_model_training(X_train, X_val, y_train, y_val, engineer, preprocessor)
             if not success:
-                print("5단계 실패 - 계속 진행")
+                print("5단계 실패")
             
             # 6단계: 예측 생성
             success, submission_df = self.step6_prediction()
             if not success:
-                print("6단계 실패 - 최종 대체 모드 시도")
+                print("6단계 실패 - 최종 대체")
                 final_success, final_result = self.fallback_prediction()
                 if not final_success:
-                    print("최종 대체 모드도 실패 - 시스템 종료")
+                    print("최종 대체 실패")
                     return False
             
             # 보고서 생성
@@ -535,7 +547,7 @@ class AISystem:
             return True
             
         except Exception as e:
-            print(f"시스템 실행 중 예외 발생: {e}")
+            print(f"시스템 실행 예외: {e}")
             
             try:
                 fallback_success, fallback_result = self.fallback_prediction()
@@ -546,7 +558,7 @@ class AISystem:
                     print("대체 모드 실패")
                     return False
             except Exception as fallback_e:
-                print(f"대체 모드도 실패: {fallback_e}")
+                print(f"대체 모드 예외: {fallback_e}")
                 return False
 
 def main():
