@@ -12,7 +12,7 @@ warnings.filterwarnings('ignore')
 class ValidationSystem:
     def __init__(self):
         self.validation_results = {}
-        self.gap_ratio = 0.10
+        self.gap_ratio = 0.15
         
     def safe_data_conversion(self, X, y=None):
         """안전한 데이터 변환"""
@@ -37,7 +37,6 @@ class ValidationSystem:
         """시간적 누수 확인"""
         issues = []
         
-        # ID 겹침 확인
         train_ids = set(train_df['ID']) if 'ID' in train_df.columns else set()
         test_ids = set(test_df['ID']) if 'ID' in test_df.columns else set()
         
@@ -45,7 +44,6 @@ class ValidationSystem:
         if common_ids:
             issues.append(f"common_ids: {len(common_ids)}")
         
-        # 시간 순서 확인
         if train_ids and test_ids:
             def extract_numbers(id_set):
                 numbers = []
@@ -69,7 +67,7 @@ class ValidationSystem:
                     overlap_count = len([x for x in train_nums if x >= test_min])
                     overlap_ratio = overlap_count / len(train_nums)
                     
-                    if overlap_ratio > 0.05:
+                    if overlap_ratio > 0.15:
                         issues.append(f"temporal_overlap: {overlap_ratio:.3f}")
         
         return len(issues) == 0, issues
@@ -78,27 +76,25 @@ class ValidationSystem:
         """검증용 모델 생성"""
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         
-        # 클래스 가중치 계산
-        class_counts = np.bincount(y_train_clean.astype(int))
+        class_counts = np.bincount(y_train_clean.astype(int), minlength=3)
         total_samples = len(y_train_clean)
         class_weights = {}
         
         for i, count in enumerate(class_counts):
             if count > 0:
-                class_weights[i] = total_samples / (len(class_counts) * count)
+                class_weights[i] = total_samples / (3 * count)
             else:
                 class_weights[i] = 1.0
         
-        # 보수적 불균형 보정
-        class_weights[1] *= 1.05
-        class_weights[2] *= 1.02
+        class_weights[1] *= 1.15
+        class_weights[2] *= 1.08
         
         model = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=8,
-            min_samples_split=10,
-            min_samples_leaf=5,
-            max_features=0.7,
+            n_estimators=300,
+            max_depth=10,
+            min_samples_split=6,
+            min_samples_leaf=3,
+            max_features=0.8,
             bootstrap=True,
             class_weight=class_weights,
             random_state=42,
@@ -109,10 +105,9 @@ class ValidationSystem:
         return model
     
     def purged_walk_forward_cv(self, X, y, n_splits=5):
-        """Purged 워크포워드 교차검증"""
+        """시간적 교차검증"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
-        # temporal_id 기반 분할
         if 'temporal_id' in X.columns:
             temporal_ids = X['temporal_id'].values
             sorted_indices = np.argsort(temporal_ids)
@@ -120,17 +115,15 @@ class ValidationSystem:
             total_samples = len(sorted_indices)
             gap_size = int(total_samples * self.gap_ratio)
             
-            # 최소 폴드 크기 확보
-            min_fold_size = total_samples // (n_splits * 2)
-            if min_fold_size < 2000:
+            min_fold_size = total_samples // (n_splits * 3)
+            if min_fold_size < 3000:
                 return self.standard_cv(X, y, n_splits)
             
             fold_scores = []
             temporal_col_idx = list(X.columns).index('temporal_id')
             
             for fold in range(n_splits):
-                # 동적 윈도우 크기
-                window_size = min_fold_size + (fold * min_fold_size // 3)
+                window_size = min_fold_size + (fold * min_fold_size // 2)
                 
                 train_start = fold * min_fold_size
                 train_end = train_start + window_size
@@ -144,7 +137,7 @@ class ValidationSystem:
                 train_idx = sorted_indices[train_start:train_end]
                 val_idx = sorted_indices[val_start:val_end]
                 
-                if len(train_idx) < 1000 or len(val_idx) < 400:
+                if len(train_idx) < 2000 or len(val_idx) < 800:
                     continue
                 
                 X_train_fold = np.delete(X_clean[train_idx], temporal_col_idx, axis=1)
@@ -177,7 +170,6 @@ class ValidationSystem:
         """표준 교차검증"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
-        # temporal_id 컬럼 제거
         if 'temporal_id' in X.columns:
             temporal_col_idx = list(X.columns).index('temporal_id')
             X_for_cv = np.delete(X_clean, temporal_col_idx, axis=1)
@@ -216,12 +208,10 @@ class ValidationSystem:
         y_pred = model.predict(X_val_clean)
         y_pred_proba = model.predict_proba(X_val_clean)
         
-        # 전체 성능
         accuracy = accuracy_score(y_val_clean, y_pred)
         f1_macro = f1_score(y_val_clean, y_pred, average='macro')
         f1_weighted = f1_score(y_val_clean, y_pred, average='weighted')
         
-        # 클래스별 성능
         class_scores = {}
         for cls in range(3):
             mask = y_val_clean == cls
@@ -232,12 +222,10 @@ class ValidationSystem:
             else:
                 class_scores[cls] = {'accuracy': 0.0, 'f1': 0.0}
         
-        # 예측 신뢰도 분석
         confidence_scores = np.max(y_pred_proba, axis=1)
         avg_confidence = np.mean(confidence_scores)
-        low_confidence_ratio = np.mean(confidence_scores < 0.5)
+        low_confidence_ratio = np.mean(confidence_scores < 0.6)
         
-        # 혼동 행렬
         cm = confusion_matrix(y_val_clean, y_pred)
         
         return {
@@ -251,11 +239,10 @@ class ValidationSystem:
             'total_samples': len(y_val_clean)
         }
     
-    def stability_test(self, X, y, n_runs=5):
+    def stability_test(self, X, y, n_runs=8):
         """안정성 테스트"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
-        # temporal_id 제거
         if 'temporal_id' in X.columns:
             temporal_col_idx = list(X.columns).index('temporal_id')
             X_temp = np.delete(X_clean, temporal_col_idx, axis=1)
@@ -271,8 +258,8 @@ class ValidationSystem:
             try:
                 X_train, X_val, y_train, y_val = train_test_split(
                     X_temp, y_clean, 
-                    test_size=0.25, 
-                    random_state=run * 7, 
+                    test_size=0.20, 
+                    random_state=run * 13, 
                     stratify=y_clean
                 )
                 
@@ -288,16 +275,14 @@ class ValidationSystem:
             except Exception:
                 continue
         
-        if len(accuracy_scores) < 3:
+        if len(accuracy_scores) < 5:
             return self.get_default_stability_results()
         
-        # 통계 계산
         mean_accuracy = np.mean(accuracy_scores)
         std_accuracy = np.std(accuracy_scores)
         mean_f1 = np.mean(f1_scores)
         std_f1 = np.std(f1_scores)
         
-        # 안정성 점수
         accuracy_stability = max(0, 1 - (std_accuracy / mean_accuracy)) if mean_accuracy > 0 else 0
         f1_stability = max(0, 1 - (std_f1 / mean_f1)) if mean_f1 > 0 else 0
         overall_stability = (accuracy_stability + f1_stability) / 2
@@ -324,16 +309,13 @@ class ValidationSystem:
         if hasattr(model, 'feature_importances_'):
             importances = model.feature_importances_
             
-            # 중요도 통계
             mean_importance = np.mean(importances)
             std_importance = np.std(importances)
             max_importance = np.max(importances)
             
-            # 상위 피처 비율
             top_10_ratio = np.sum(np.sort(importances)[-10:]) / np.sum(importances) if len(importances) >= 10 else 1.0
             top_5_ratio = np.sum(np.sort(importances)[-5:]) / np.sum(importances) if len(importances) >= 5 else 1.0
             
-            # 중요도 집중도
             concentration = 1 - (np.sum(importances > mean_importance) / len(importances))
             
             return {
@@ -385,41 +367,34 @@ class ValidationSystem:
         
         X_clean, y_clean = self.safe_data_conversion(X_train, y_train)
         
-        # 홀드아웃 검증
         if X_val is not None and y_val is not None:
             holdout_results = self.holdout_validation(X_train, y_train, X_val, y_val)
         else:
-            # 데이터 분할해서 홀드아웃
             from sklearn.model_selection import train_test_split
             try:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.22, random_state=42, stratify=y_clean
+                    X_clean, y_clean, test_size=0.15, random_state=42, stratify=y_clean
                 )
             except:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.22, random_state=42
+                    X_clean, y_clean, test_size=0.15, random_state=42
                 )
             holdout_results = self.holdout_validation(X_train_split, y_train_split, X_val_split, y_val_split)
         
-        # 교차검증
         cv_results = self.purged_walk_forward_cv(X_train, y_train)
         
-        # 안정성 테스트
         stability_results = self.stability_test(X_train, y_train)
         
-        # 피처 중요도 검증
         feature_results = self.feature_importance_validation(X_train, y_train)
         
-        # 종합 점수 계산
         holdout_score = holdout_results.get('accuracy', 0.0)
         cv_score = cv_results.get('mean_score', 0.0)
         stability_score = stability_results.get('overall_stability', 0.0)
         
-        # 보수적 가중 평균
         overall_score = (
-            holdout_score * 0.35 +
+            holdout_score * 0.40 +
             cv_score * 0.45 +
-            stability_score * 0.20
+            stability_score * 0.15
         )
         
         self.validation_results = {

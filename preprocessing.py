@@ -6,6 +6,7 @@ from sklearn.preprocessing import RobustScaler
 from sklearn.feature_selection import SelectKBest, mutual_info_classif, VarianceThreshold
 from sklearn.model_selection import train_test_split
 from sklearn.impute import KNNImputer
+from imblearn.over_sampling import SMOTE
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -16,6 +17,7 @@ class DataPreprocessor:
         self.imputer = None
         self.selected_features = None
         self.temporal_cutoff = None
+        self.smote = None
         
     def safe_data_conversion(self, df):
         """안전한 데이터 변환"""
@@ -36,16 +38,14 @@ class DataPreprocessor:
         if 'temporal_id' not in train_df.columns:
             return train_df
         
-        # 보수적 필터링 (상위 25% 제거)
-        threshold = np.percentile(train_df['temporal_id'], 75)
+        threshold = np.percentile(train_df['temporal_id'], 85)
         safe_mask = train_df['temporal_id'] <= threshold
         safe_data = train_df[safe_mask].copy()
         
-        # 최소 데이터 보장
-        if len(safe_data) > 15000:
+        if len(safe_data) > 20000:
             return safe_data
         else:
-            threshold = np.percentile(train_df['temporal_id'], 85)
+            threshold = np.percentile(train_df['temporal_id'], 90)
             safe_mask = train_df['temporal_id'] <= threshold
             return train_df[safe_mask].copy()
     
@@ -54,12 +54,10 @@ class DataPreprocessor:
         train_clean = self.safe_data_conversion(train_df)
         test_clean = self.safe_data_conversion(test_df)
         
-        # 수치형 변수
         numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'temporal_position']
         
-        # 시간 관련 피처가 있다면 추가
         for col in train_clean.columns:
-            if any(keyword in col for keyword in ['activity_score', 'payment_stability', 'ratio']):
+            if any(keyword in col for keyword in ['activity_score', 'payment_stability', 'ratio', 'interaction']):
                 if col not in numeric_cols:
                     numeric_cols.append(col)
         
@@ -67,7 +65,7 @@ class DataPreprocessor:
         
         if common_numeric:
             if self.imputer is None:
-                self.imputer = KNNImputer(n_neighbors=5, weights='distance')
+                self.imputer = KNNImputer(n_neighbors=7, weights='distance', metric='nan_euclidean')
                 train_imputed = self.imputer.fit_transform(train_clean[common_numeric])
             else:
                 train_imputed = self.imputer.transform(train_clean[common_numeric])
@@ -77,16 +75,16 @@ class DataPreprocessor:
             train_clean[common_numeric] = train_imputed
             test_clean[common_numeric] = test_imputed
         
-        # 범주형 변수
-        categorical_cols = ['gender', 'subscription_type']
+        categorical_cols = []
+        for col in train_clean.columns:
+            if 'target_encoded' in col:
+                categorical_cols.append(col)
         
         for col in categorical_cols:
             if col in train_clean.columns and col in test_clean.columns:
-                mode_val = train_clean[col].mode()
-                fill_val = mode_val.iloc[0] if len(mode_val) > 0 else 'Unknown'
-                
-                train_clean[col].fillna(fill_val, inplace=True)
-                test_clean[col].fillna(fill_val, inplace=True)
+                train_mean = train_clean[col].mean()
+                train_clean[col].fillna(train_mean, inplace=True)
+                test_clean[col].fillna(train_mean, inplace=True)
         
         return train_clean, test_clean
     
@@ -97,7 +95,7 @@ class DataPreprocessor:
         numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         
         for col in train_clean.columns:
-            if any(keyword in col for keyword in ['activity_score', 'payment_stability', 'ratio']):
+            if any(keyword in col for keyword in ['activity_score', 'payment_stability', 'ratio', 'interaction']):
                 if col not in numeric_cols:
                     numeric_cols.append(col)
         
@@ -107,14 +105,14 @@ class DataPreprocessor:
             values = train_clean[col].dropna()
             
             if len(values) > 100:
-                q01 = values.quantile(0.01)
-                q99 = values.quantile(0.99)
+                q05 = values.quantile(0.05)
+                q95 = values.quantile(0.95)
                 
-                train_clean[col] = np.clip(train_clean[col], q01, q99)
+                train_clean[col] = np.clip(train_clean[col], q05, q95)
         
         return train_clean
     
-    def select_features(self, train_df, max_features=22):
+    def select_features(self, train_df, max_features=25):
         """피처 선택"""
         if 'support_needs' not in train_df.columns:
             feature_cols = [col for col in train_df.columns if col not in ['ID']]
@@ -129,8 +127,7 @@ class DataPreprocessor:
         X = train_df[feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
         y = np.clip(train_df['support_needs'], 0, 2)
         
-        # 분산 필터링
-        variance_selector = VarianceThreshold(threshold=0.001)
+        variance_selector = VarianceThreshold(threshold=0.005)
         X_variance = variance_selector.fit_transform(X)
         variance_features = [feature_cols[i] for i, selected in enumerate(variance_selector.get_support()) if selected]
         
@@ -138,7 +135,6 @@ class DataPreprocessor:
             self.selected_features = variance_features
             return variance_features
         
-        # 상호정보량 기반 선택
         X_var_df = pd.DataFrame(X_variance, columns=variance_features)
         mi_selector = SelectKBest(score_func=mutual_info_classif, k=max_features)
         mi_selector.fit(X_var_df, y)
@@ -162,7 +158,7 @@ class DataPreprocessor:
             return train_clean, test_clean
         
         if self.scaler is None:
-            self.scaler = RobustScaler()
+            self.scaler = RobustScaler(quantile_range=(5.0, 95.0))
             scaled_train = self.scaler.fit_transform(train_clean[common_numeric])
         else:
             scaled_train = self.scaler.transform(train_clean[common_numeric])
@@ -174,6 +170,33 @@ class DataPreprocessor:
         
         return train_clean, test_clean
     
+    def apply_smote(self, X_train, y_train):
+        """SMOTE 적용"""
+        try:
+            class_counts = np.bincount(y_train.astype(int))
+            min_class_count = np.min(class_counts[class_counts > 0])
+            
+            if min_class_count < 100:
+                k_neighbors = min(5, min_class_count - 1)
+            else:
+                k_neighbors = 5
+            
+            if k_neighbors <= 0:
+                return X_train, y_train
+            
+            if self.smote is None:
+                self.smote = SMOTE(
+                    sampling_strategy='auto',
+                    k_neighbors=k_neighbors,
+                    random_state=42
+                )
+            
+            X_resampled, y_resampled = self.smote.fit_resample(X_train, y_train)
+            return X_resampled, y_resampled
+            
+        except Exception as e:
+            return X_train, y_train
+    
     def validate_data_quality(self, train_df, test_df):
         """데이터 품질 검증"""
         issues = []
@@ -181,7 +204,6 @@ class DataPreprocessor:
         train_numeric_cols = train_df.select_dtypes(include=[np.number]).columns
         test_numeric_cols = test_df.select_dtypes(include=[np.number]).columns
         
-        # 무한값 확인
         train_inf = np.isinf(train_df[train_numeric_cols]).sum().sum()
         test_inf = np.isinf(test_df[test_numeric_cols]).sum().sum()
         
@@ -190,7 +212,6 @@ class DataPreprocessor:
         if test_inf > 0:
             issues.append(f"test_infinite_values: {test_inf}")
         
-        # 결측치 확인
         train_nan = train_df[train_numeric_cols].isnull().sum().sum()
         test_nan = test_df[test_numeric_cols].isnull().sum().sum()
         
@@ -199,7 +220,6 @@ class DataPreprocessor:
         if test_nan > 0:
             issues.append(f"test_missing_values: {test_nan}")
         
-        # 타겟 유효성
         if 'support_needs' in train_df.columns:
             invalid_count = (~train_df['support_needs'].isin([0, 1, 2])).sum()
             if invalid_count > 0:
@@ -212,18 +232,14 @@ class DataPreprocessor:
         if train_df is None or test_df is None or train_df.empty or test_df.empty:
             return None, None
         
-        # 시간적 필터링
         train_df = self.apply_temporal_filtering(train_df)
         
-        # 결측치 처리
         train_df, test_df = self.handle_missing_values(train_df, test_df)
         
-        # 이상치 제거
         train_df = self.remove_outliers(train_df)
         
-        # 피처 선택
         if 'support_needs' in train_df.columns:
-            selected_features = self.select_features(train_df, max_features=22)
+            selected_features = self.select_features(train_df, max_features=25)
             
             keep_cols_train = ['ID', 'support_needs'] + selected_features
             keep_cols_test = ['ID'] + [f for f in selected_features if f in test_df.columns]
@@ -234,15 +250,13 @@ class DataPreprocessor:
             train_df = train_df[available_train_cols]
             test_df = test_df[available_test_cols]
         
-        # 스케일링
         train_df, test_df = self.apply_scaling(train_df, test_df)
         
-        # 품질 검증
         quality_ok, issues = self.validate_data_quality(train_df, test_df)
         
         return train_df, test_df
     
-    def prepare_data_split(self, train_df, test_df, val_size=0.22, gap_size=0.10):
+    def prepare_data_split(self, train_df, test_df, val_size=0.15, gap_size=0.15):
         """데이터 분할"""
         if train_df is None or test_df is None:
             return None, None, None, None, None, None
@@ -264,7 +278,6 @@ class DataPreprocessor:
             
             return X_train_split, X_val_split, y_dummy[:len(X_train_split)], y_val_dummy, X_test, test_ids
         
-        # 공통 피처 식별
         train_cols = set(train_df.columns)
         test_cols = set(test_df.columns)
         common_features = list((train_cols & test_cols) - {'ID', 'support_needs'})
@@ -279,7 +292,6 @@ class DataPreprocessor:
         X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
         test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
         
-        # 시간 기반 분할 with Gap
         if 'temporal_id' in X.columns:
             temporal_ids = X['temporal_id'].values
             sorted_indices = np.argsort(temporal_ids)
@@ -289,13 +301,11 @@ class DataPreprocessor:
             val_samples = int(total_samples * val_size)
             train_samples = total_samples - val_samples - gap_samples
             
-            if train_samples < 5000 or val_samples < 1000:
-                # 데이터 부족시 계층화 분할
+            if train_samples < 15000 or val_samples < 3000:
                 X_train, X_val, y_train, y_val = train_test_split(
                     X, y, test_size=val_size, random_state=42, stratify=y
                 )
             else:
-                # 훈련-갭-검증 순서로 분할
                 train_indices = sorted_indices[:train_samples]
                 val_indices = sorted_indices[train_samples + gap_samples:]
                 
@@ -303,13 +313,19 @@ class DataPreprocessor:
                 X_val = X.iloc[val_indices]
                 y_train = y.iloc[train_indices]
                 y_val = y.iloc[val_indices]
+                
+                X_train = X_train.drop('temporal_id', axis=1)
+                X_val = X_val.drop('temporal_id', axis=1)
+                if 'temporal_id' in X_test.columns:
+                    X_test = X_test.drop('temporal_id', axis=1)
         else:
-            # 계층화 분할
             X_train, X_val, y_train, y_val = train_test_split(
                 X, y, test_size=val_size, random_state=42, stratify=y
             )
         
-        return X_train, X_val, y_train, y_val, X_test, test_ids
+        X_train_resampled, y_train_resampled = self.apply_smote(X_train, y_train)
+        
+        return X_train_resampled, X_val, y_train_resampled, y_val, X_test, test_ids
 
 def main():
     try:

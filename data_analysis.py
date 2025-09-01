@@ -68,12 +68,10 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 보수적 시간적 분할점 계산
-            overlap_threshold = int(np.percentile(train_id_nums, 75))
+            overlap_threshold = int(np.percentile(train_id_nums, 85))
             
             self.temporal_threshold = overlap_threshold
             
-            # 안전 구간 계산
             safe_indices = [i for i, tid in enumerate(train_id_nums) if tid <= overlap_threshold]
             safe_ratio = len(safe_indices) / len(train_id_nums)
             
@@ -92,11 +90,25 @@ class DataAnalyzer:
         leakage_features = {}
         
         if 'after_interaction' in self.train_df.columns and 'support_needs' in self.train_df.columns:
-            # 완전 제거 플래그 설정
+            correlation = self.train_df['after_interaction'].corr(self.train_df['support_needs'])
+            
             leakage_features['after_interaction'] = {
                 'should_remove': True,
-                'reason': 'temporal_leakage_risk'
+                'correlation': correlation,
+                'reason': 'temporal_leakage_confirmed'
             }
+        
+        feature_cols = [col for col in self.train_df.columns if col not in ['ID', 'support_needs']]
+        
+        for col in feature_cols:
+            if col != 'after_interaction' and self.train_df[col].dtype in [np.number]:
+                train_variance = self.train_df[col].var()
+                if train_variance < 0.001:
+                    leakage_features[col] = {
+                        'should_remove': True,
+                        'variance': train_variance,
+                        'reason': 'low_variance'
+                    }
         
         return leakage_features
     
@@ -111,17 +123,14 @@ class DataAnalyzer:
                 test_vals = self.test_df[feature].dropna()
                 
                 if len(train_vals) > 100 and len(test_vals) > 100:
-                    # KS 테스트
                     ks_stat, ks_p = ks_2samp(train_vals, test_vals)
-                    
-                    # PSI 계산
                     psi_score = self.calculate_psi(train_vals, test_vals)
                     
                     stability_results[feature] = {
                         'ks_statistic': ks_stat,
                         'ks_p_value': ks_p,
                         'psi_score': psi_score,
-                        'is_stable': ks_stat < 0.05 and psi_score < 0.1
+                        'is_stable': ks_stat < 0.05 and psi_score < 0.2
                     }
         
         return stability_results
@@ -162,15 +171,12 @@ class DataAnalyzer:
                 train_counts = self.train_df[col].value_counts()
                 test_counts = self.test_df[col].value_counts()
                 
-                # 공통 카테고리
                 common_cats = set(train_counts.index) & set(test_counts.index)
                 
                 if len(common_cats) > 1:
-                    # 분포 비교
                     train_dist = train_counts / len(self.train_df)
                     test_dist = test_counts / len(self.test_df)
                     
-                    # 카이제곱 검정
                     contingency_table = []
                     for cat in sorted(common_cats):
                         contingency_table.append([
@@ -188,7 +194,7 @@ class DataAnalyzer:
                         'test_distribution': test_dist.to_dict(),
                         'chi2_statistic': chi2_stat,
                         'chi2_p_value': chi2_p,
-                        'is_stable': chi2_p > 0.01
+                        'is_stable': chi2_p > 0.05
                     }
         
         return categorical_analysis
@@ -201,7 +207,6 @@ class DataAnalyzer:
         numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         available_numeric = [f for f in numeric_features if f in self.train_df.columns]
         
-        # 범주형 피처 인코딩
         categorical_features = ['gender', 'subscription_type']
         train_encoded = self.train_df.copy()
         
@@ -214,14 +219,12 @@ class DataAnalyzer:
         if not available_numeric:
             return {}
         
-        # 상호정보량 계산
         X = train_encoded[available_numeric].fillna(0)
         y = train_encoded['support_needs']
         
         mi_scores = mutual_info_classif(X, y, random_state=42)
         importance_dict = dict(zip(available_numeric, mi_scores))
         
-        # 정규화
         max_score = max(importance_dict.values()) if importance_dict else 1
         if max_score > 0:
             importance_dict = {k: v/max_score for k, v in importance_dict.items()}
@@ -232,7 +235,6 @@ class DataAnalyzer:
         """데이터 무결성 검증"""
         issues = []
         
-        # ID 중복 확인
         train_duplicates = self.train_df['ID'].duplicated().sum()
         test_duplicates = self.test_df['ID'].duplicated().sum()
         
@@ -241,14 +243,12 @@ class DataAnalyzer:
         if test_duplicates > 0:
             issues.append(f"test_id_duplicates: {test_duplicates}")
         
-        # 타겟 유효성
         if 'support_needs' in self.train_df.columns:
             invalid_targets = ~self.train_df['support_needs'].isin([0, 1, 2])
             invalid_count = invalid_targets.sum()
             if invalid_count > 0:
                 issues.append(f"invalid_targets: {invalid_count}")
         
-        # 결측치 패턴
         missing_info = {}
         for col in self.train_df.columns:
             if col != 'ID':
@@ -259,12 +259,38 @@ class DataAnalyzer:
         
         return len(issues) == 0, issues, missing_info
     
-    def run_analysis(self):
-        """분석 실행"""
-        if self.load_data() is None:
+    def analyze_correlation_matrix(self):
+        """상관관계 분석"""
+        numeric_cols = self.train_df.select_dtypes(include=[np.number]).columns
+        numeric_cols = [col for col in numeric_cols if col != 'support_needs']
+        
+        if len(numeric_cols) < 2:
             return {}
         
-        # 무결성 검증
+        corr_matrix = self.train_df[numeric_cols].corr()
+        
+        high_corr_pairs = []
+        for i in range(len(corr_matrix.columns)):
+            for j in range(i+1, len(corr_matrix.columns)):
+                corr_val = abs(corr_matrix.iloc[i, j])
+                if corr_val > 0.8:
+                    high_corr_pairs.append({
+                        'feature1': corr_matrix.columns[i],
+                        'feature2': corr_matrix.columns[j],
+                        'correlation': corr_val
+                    })
+        
+        return {
+            'correlation_matrix': corr_matrix.to_dict(),
+            'high_correlation_pairs': high_corr_pairs,
+            'max_correlation': corr_matrix.abs().max().max() if not corr_matrix.empty else 0
+        }
+    
+    def run_analysis(self):
+        """분석 실행"""
+        if self.load_data() == (None, None):
+            return {}
+        
         integrity_ok, integrity_issues, missing_info = self.validate_data_integrity()
         self.analysis_results['integrity'] = {
             'passed': integrity_ok,
@@ -272,29 +298,26 @@ class DataAnalyzer:
             'missing_info': missing_info
         }
         
-        # 타겟 분포
         target_info = self.analyze_target_distribution()
         self.analysis_results['target_distribution'] = target_info
         
-        # 시간적 패턴
         temporal_info = self.analyze_temporal_patterns()
         self.analysis_results['temporal'] = temporal_info
         
-        # 데이터 누수 탐지
         leakage_info = self.detect_data_leakage()
         self.analysis_results['leakage'] = leakage_info
         
-        # 피처 안정성
         stability_info = self.analyze_feature_stability()
         self.analysis_results['stability'] = stability_info
         
-        # 범주형 분석
         categorical_info = self.analyze_categorical_features()
         self.analysis_results['categorical'] = categorical_info
         
-        # 피처 중요도
         importance_info = self.compute_feature_importance_baseline()
         self.analysis_results['feature_importance'] = importance_info
+        
+        correlation_info = self.analyze_correlation_matrix()
+        self.analysis_results['correlation'] = correlation_info
         
         return self.analysis_results
 

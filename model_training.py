@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
 import lightgbm as lgb
 import xgboost as xgb
@@ -27,19 +28,18 @@ class ModelTrainer:
     def calculate_class_weights(self, y_train):
         """클래스 가중치 계산"""
         y_array = np.array(y_train)
-        class_counts = np.bincount(y_array)
+        class_counts = np.bincount(y_array.astype(int), minlength=3)
         total_samples = len(y_array)
         
         weights = {}
         for i, count in enumerate(class_counts):
             if count > 0:
-                weights[i] = total_samples / (len(class_counts) * count)
+                weights[i] = total_samples / (3 * count)
             else:
                 weights[i] = 1.0
         
-        # 보수적 가중치 조정
-        weights[1] *= 1.05
-        weights[2] *= 1.02
+        weights[1] *= 1.10
+        weights[2] *= 1.05
         
         self.class_weights = weights
         return weights
@@ -82,7 +82,7 @@ class ModelTrainer:
                 raise ValueError("전처리 실패")
             
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_split(
-                train_df, test_df, val_size=0.22, gap_size=0.10
+                train_df, test_df, val_size=0.15, gap_size=0.15
             )
             
             if X_train is None or X_val is None:
@@ -103,16 +103,16 @@ class ModelTrainer:
             'num_class': 3,
             'metric': 'multi_logloss',
             'boosting_type': 'gbdt',
-            'num_leaves': 31,
-            'learning_rate': 0.05,
-            'feature_fraction': 0.8,
-            'bagging_fraction': 0.8,
+            'num_leaves': 40,
+            'learning_rate': 0.08,
+            'feature_fraction': 0.85,
+            'bagging_fraction': 0.85,
             'bagging_freq': 5,
-            'min_child_weight': 10,
-            'min_split_gain': 0.05,
-            'reg_alpha': 0.05,
-            'reg_lambda': 0.05,
-            'max_depth': 6,
+            'min_child_weight': 8,
+            'min_split_gain': 0.02,
+            'reg_alpha': 0.02,
+            'reg_lambda': 0.02,
+            'max_depth': 7,
             'verbose': -1,
             'random_state': 42,
             'force_col_wise': True
@@ -121,7 +121,6 @@ class ModelTrainer:
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        # 클래스 가중치 적용
         sample_weight = np.ones(len(y_train_clean))
         for i, weight in self.class_weights.items():
             mask = y_train_clean == i
@@ -134,8 +133,8 @@ class ModelTrainer:
             lgb_params,
             train_data,
             valid_sets=[val_data],
-            num_boost_round=1000,
-            callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)]
+            num_boost_round=1200,
+            callbacks=[lgb.early_stopping(120), lgb.log_evaluation(0)]
         )
         
         y_pred = model.predict(X_val_clean)
@@ -151,14 +150,14 @@ class ModelTrainer:
             'objective': 'multi:softprob',
             'num_class': 3,
             'eval_metric': 'mlogloss',
-            'max_depth': 6,
-            'learning_rate': 0.05,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'reg_alpha': 0.05,
-            'reg_lambda': 0.05,
-            'min_child_weight': 10,
-            'gamma': 0.05,
+            'max_depth': 7,
+            'learning_rate': 0.08,
+            'subsample': 0.85,
+            'colsample_bytree': 0.85,
+            'reg_alpha': 0.02,
+            'reg_lambda': 0.02,
+            'min_child_weight': 8,
+            'gamma': 0.02,
             'random_state': 42,
             'verbosity': 0,
             'tree_method': 'hist'
@@ -167,7 +166,6 @@ class ModelTrainer:
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        # 클래스 가중치 적용
         sample_weight = np.ones(len(y_train_clean))
         for i, weight in self.class_weights.items():
             mask = y_train_clean == i
@@ -179,9 +177,9 @@ class ModelTrainer:
         model = xgb.train(
             params,
             train_data,
-            num_boost_round=1000,
+            num_boost_round=1200,
             evals=[(val_data, 'eval')],
-            early_stopping_rounds=100,
+            early_stopping_rounds=120,
             verbose_eval=0
         )
         
@@ -197,23 +195,22 @@ class ModelTrainer:
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        # 클래스 가중치 적용
         sample_weight = np.ones(len(y_train_clean))
         for i, weight in self.class_weights.items():
             mask = y_train_clean == i
             sample_weight[mask] = weight
         
         model = CatBoostClassifier(
-            iterations=1000,
-            learning_rate=0.05,
-            depth=6,
-            l2_leaf_reg=3,
+            iterations=1200,
+            learning_rate=0.08,
+            depth=7,
+            l2_leaf_reg=2,
             bootstrap_type='Bernoulli',
-            subsample=0.8,
-            colsample_bylevel=0.8,
+            subsample=0.85,
+            colsample_bylevel=0.85,
             random_seed=42,
             verbose=0,
-            early_stopping_rounds=100,
+            early_stopping_rounds=120,
             task_type='CPU',
             thread_count=-1
         )
@@ -238,11 +235,11 @@ class ModelTrainer:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = RandomForestClassifier(
-            n_estimators=300,
-            max_depth=10,
-            min_samples_split=10,
-            min_samples_leaf=5,
-            max_features=0.7,
+            n_estimators=400,
+            max_depth=12,
+            min_samples_split=8,
+            min_samples_leaf=3,
+            max_features=0.8,
             bootstrap=True,
             class_weight=self.class_weights,
             random_state=42,
@@ -263,11 +260,11 @@ class ModelTrainer:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = ExtraTreesClassifier(
-            n_estimators=300,
-            max_depth=10,
-            min_samples_split=8,
-            min_samples_leaf=4,
-            max_features=0.7,
+            n_estimators=400,
+            max_depth=12,
+            min_samples_split=6,
+            min_samples_leaf=2,
+            max_features=0.8,
             bootstrap=True,
             class_weight=self.class_weights,
             random_state=42,
@@ -282,11 +279,91 @@ class ModelTrainer:
         self.models['extra_trees'] = model
         return model, accuracy
     
-    def create_simple_ensemble(self, X_val, y_val):
-        """단순 앙상블"""
+    def train_logistic_regression(self, X_train, y_train, X_val, y_val):
+        """로지스틱 회귀 모델 학습"""
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        # 각 모델의 성능 평가
+        model = LogisticRegression(
+            solver='liblinear',
+            C=0.5,
+            penalty='l2',
+            class_weight=self.class_weights,
+            random_state=42,
+            max_iter=2000
+        )
+        
+        model.fit(X_train_clean, y_train_clean)
+        
+        y_pred = model.predict(X_val_clean)
+        accuracy = accuracy_score(y_val_clean, y_pred)
+        
+        self.models['logistic_regression'] = model
+        return model, accuracy
+    
+    def train_svm(self, X_train, y_train, X_val, y_val):
+        """SVM 모델 학습"""
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
+        
+        if len(X_train_clean) > 10000:
+            sample_indices = np.random.choice(len(X_train_clean), 8000, replace=False)
+            X_train_sample = X_train_clean[sample_indices]
+            y_train_sample = y_train_clean[sample_indices]
+        else:
+            X_train_sample = X_train_clean
+            y_train_sample = y_train_clean
+        
+        model = SVC(
+            kernel='rbf',
+            C=1.0,
+            gamma='scale',
+            class_weight=self.class_weights,
+            probability=True,
+            random_state=42
+        )
+        
+        model.fit(X_train_sample, y_train_sample)
+        
+        y_pred = model.predict(X_val_clean)
+        accuracy = accuracy_score(y_val_clean, y_pred)
+        
+        self.models['svm'] = model
+        return model, accuracy
+    
+    def train_gradient_boosting(self, X_train, y_train, X_val, y_val):
+        """Gradient Boosting 모델 학습"""
+        X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
+        
+        sample_weight = np.ones(len(y_train_clean))
+        for i, weight in self.class_weights.items():
+            mask = y_train_clean == i
+            sample_weight[mask] = weight
+        
+        model = GradientBoostingClassifier(
+            n_estimators=300,
+            learning_rate=0.1,
+            max_depth=7,
+            min_samples_split=8,
+            min_samples_leaf=3,
+            subsample=0.85,
+            max_features=0.8,
+            random_state=42
+        )
+        
+        model.fit(X_train_clean, y_train_clean, sample_weight=sample_weight)
+        
+        y_pred = model.predict(X_val_clean)
+        accuracy = accuracy_score(y_val_clean, y_pred)
+        
+        self.models['gradient_boosting'] = model
+        return model, accuracy
+    
+    def create_ensemble_weights(self, X_val, y_val):
+        """앙상블 가중치 계산"""
+        X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
+        
         model_scores = {}
         
         for name, model in self.models.items():
@@ -311,7 +388,6 @@ class ModelTrainer:
             except Exception as e:
                 model_scores[name] = 0.0
         
-        # 성능 기반 가중치
         total_score = sum(model_scores.values())
         if total_score > 0:
             for name in model_scores:
@@ -321,17 +397,24 @@ class ModelTrainer:
             for name in model_scores:
                 self.ensemble_weights[name] = 1.0 / num_models
         
+        boosting_models = ['lightgbm', 'xgboost', 'catboost', 'gradient_boosting']
+        for model_name in boosting_models:
+            if model_name in self.ensemble_weights:
+                self.ensemble_weights[model_name] *= 1.1
+        
+        total_weight = sum(self.ensemble_weights.values())
+        for name in self.ensemble_weights:
+            self.ensemble_weights[name] /= total_weight
+        
         return self.ensemble_weights
     
     def save_models(self, engineer, preprocessor):
         """모델 저장"""
         os.makedirs('models', exist_ok=True)
         
-        # 전처리기 저장
         joblib.dump(preprocessor, 'models/preprocessor.pkl')
         joblib.dump(engineer, 'models/feature_engineer.pkl')
         
-        # 피처 정보 저장
         feature_info = {
             'feature_names': self.feature_names,
             'feature_count': len(self.feature_names),
@@ -340,7 +423,6 @@ class ModelTrainer:
         }
         joblib.dump(feature_info, 'models/feature_info.pkl')
         
-        # 모델 저장
         saved_count = 0
         for name, model in self.models.items():
             try:
@@ -371,7 +453,6 @@ class ModelTrainer:
         
         model_results = {}
         
-        # 핵심 모델들만 학습
         try:
             lgb_model, lgb_acc = self.train_lightgbm(X_train, y_train, X_val, y_val)
             model_results['lightgbm'] = lgb_acc
@@ -402,10 +483,26 @@ class ModelTrainer:
         except Exception:
             model_results['extra_trees'] = 0.0
         
-        # 앙상블 가중치 계산
-        self.create_simple_ensemble(X_val, y_val)
+        try:
+            lr_model, lr_acc = self.train_logistic_regression(X_train, y_train, X_val, y_val)
+            model_results['logistic_regression'] = lr_acc
+        except Exception:
+            model_results['logistic_regression'] = 0.0
         
-        # 모델 저장
+        try:
+            svm_model, svm_acc = self.train_svm(X_train, y_train, X_val, y_val)
+            model_results['svm'] = svm_acc
+        except Exception:
+            model_results['svm'] = 0.0
+        
+        try:
+            gb_model, gb_acc = self.train_gradient_boosting(X_train, y_train, X_val, y_val)
+            model_results['gradient_boosting'] = gb_acc
+        except Exception:
+            model_results['gradient_boosting'] = 0.0
+        
+        self.create_ensemble_weights(X_val, y_val)
+        
         self.save_models(engineer, preprocessor)
 
 def main():

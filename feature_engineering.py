@@ -2,17 +2,15 @@
 
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder, RobustScaler
+from sklearn.preprocessing import RobustScaler
 from sklearn.model_selection import StratifiedKFold
 from sklearn.cluster import KMeans
 from sklearn.feature_selection import SelectKBest, mutual_info_classif, VarianceThreshold
-from sklearn.ensemble import RandomForestClassifier
 import warnings
 warnings.filterwarnings('ignore')
 
 class FeatureEngineer:
     def __init__(self):
-        self.label_encoders = {}
         self.target_encoders = {}
         self.kmeans_model = None
         self.selected_features = None
@@ -37,7 +35,6 @@ class FeatureEngineer:
         train_clean = train_df.copy()
         test_clean = test_df.copy()
         
-        # after_interaction 완전 제거
         if 'after_interaction' in train_clean.columns:
             train_clean = train_clean.drop('after_interaction', axis=1)
         if 'after_interaction' in test_clean.columns:
@@ -76,7 +73,6 @@ class FeatureEngineer:
         """비즈니스 피처 생성"""
         df_new = self.safe_data_conversion(df)
         
-        # 고객 활동성
         if all(col in df.columns for col in ['tenure', 'frequent']):
             tenure_safe = np.clip(df_new['tenure'].fillna(100), 1, 2000)
             frequent_safe = np.clip(df_new['frequent'].fillna(10), 1, 200)
@@ -84,7 +80,6 @@ class FeatureEngineer:
             df_new['activity_score'] = frequent_safe / (tenure_safe / 30 + 1)
             df_new['activity_score'] = np.clip(df_new['activity_score'], 0, 50)
         
-        # 결제 안정성
         if all(col in df.columns for col in ['payment_interval', 'contract_length']):
             payment_safe = np.clip(df_new['payment_interval'].fillna(30), 1, 365)
             contract_safe = np.clip(df_new['contract_length'].fillna(90), 1, 1000)
@@ -92,7 +87,6 @@ class FeatureEngineer:
             df_new['payment_stability'] = contract_safe / payment_safe
             df_new['payment_stability'] = np.clip(df_new['payment_stability'], 0, 30)
         
-        # 고객 세그먼트
         if 'age' in df.columns:
             age_safe = np.clip(df_new['age'].fillna(35), 18, 100)
             df_new['age_group'] = pd.cut(age_safe, 
@@ -106,7 +100,6 @@ class FeatureEngineer:
         """비율 피처 생성"""
         df_new = self.safe_data_conversion(df)
         
-        # 핵심 비율들만 생성
         ratios = [
             ('age', 'tenure'),
             ('frequent', 'payment_interval'),
@@ -138,7 +131,6 @@ class FeatureEngineer:
             if col in train_df.columns and col in test_df.columns:
                 train_encoded = np.zeros(len(train_df))
                 
-                # 교차 검증 기반 인코딩
                 for train_idx, val_idx in skf.split(train_df, train_df['support_needs']):
                     fold_train = train_df.iloc[train_idx]
                     fold_val = train_df.iloc[val_idx]
@@ -146,42 +138,73 @@ class FeatureEngineer:
                     target_mean = fold_train.groupby(col)['support_needs'].mean()
                     global_mean = fold_train['support_needs'].mean()
                     
-                    encoded_vals = fold_val[col].map(target_mean).fillna(global_mean)
+                    category_counts = fold_train.groupby(col)['support_needs'].count()
+                    smoothing_factor = 5.0
+                    
+                    smoothed_mean = (target_mean * category_counts + global_mean * smoothing_factor) / (category_counts + smoothing_factor)
+                    
+                    encoded_vals = fold_val[col].map(smoothed_mean).fillna(global_mean)
                     train_encoded[val_idx] = encoded_vals
                 
                 train_new[f'{col}_target_encoded'] = train_encoded
                 
-                # 테스트 데이터 인코딩
                 target_mean_all = train_df.groupby(col)['support_needs'].mean()
                 global_mean_all = train_df['support_needs'].mean()
+                category_counts_all = train_df.groupby(col)['support_needs'].count()
                 
-                test_encoded = test_df[col].map(target_mean_all).fillna(global_mean_all)
+                smoothed_mean_all = (target_mean_all * category_counts_all + global_mean_all * smoothing_factor) / (category_counts_all + smoothing_factor)
+                
+                test_encoded = test_df[col].map(smoothed_mean_all).fillna(global_mean_all)
                 test_new[f'{col}_target_encoded'] = test_encoded
+                
+                train_new = train_new.drop(col, axis=1)
+                test_new = test_new.drop(col, axis=1)
         
         return train_new, test_new
     
-    def encode_categorical(self, train_df, test_df):
-        """범주형 인코딩"""
-        categorical_cols = ['gender', 'subscription_type']
+    def create_interaction_features(self, df):
+        """상호작용 피처 생성"""
+        df_new = self.safe_data_conversion(df)
+        
+        if all(col in df.columns for col in ['age', 'tenure']):
+            age_safe = np.clip(df_new['age'].fillna(35), 18, 100)
+            tenure_safe = np.clip(df_new['tenure'].fillna(100), 1, 2000)
+            df_new['age_tenure_interaction'] = age_safe * tenure_safe / 1000
+        
+        if all(col in df.columns for col in ['frequent', 'contract_length']):
+            frequent_safe = np.clip(df_new['frequent'].fillna(10), 1, 200)
+            contract_safe = np.clip(df_new['contract_length'].fillna(90), 1, 1000)
+            df_new['frequent_contract_interaction'] = frequent_safe * contract_safe / 1000
+        
+        return df_new
+    
+    def create_clustering_features(self, train_df, test_df):
+        """클러스터링 피처 생성"""
+        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        available_cols = [col for col in numeric_cols if col in train_df.columns and col in test_df.columns]
+        
+        if len(available_cols) < 3:
+            return train_df, test_df
         
         train_new = train_df.copy()
         test_new = test_df.copy()
         
-        for col in categorical_cols:
-            if col in train_df.columns and col in test_df.columns:
-                combined_data = pd.concat([train_df[col], test_df[col]])
-                
-                if col not in self.label_encoders:
-                    self.label_encoders[col] = LabelEncoder()
-                    unique_vals = combined_data.fillna('Unknown').unique()
-                    self.label_encoders[col].fit(unique_vals)
-                
-                train_new[col] = self.label_encoders[col].transform(train_new[col].fillna('Unknown'))
-                test_new[col] = self.label_encoders[col].transform(test_new[col].fillna('Unknown'))
+        train_features = train_df[available_cols].fillna(0)
+        test_features = test_df[available_cols].fillna(0)
+        
+        if self.kmeans_model is None:
+            self.kmeans_model = KMeans(n_clusters=5, random_state=42, n_init=10)
+            self.kmeans_model.fit(train_features)
+        
+        train_clusters = self.kmeans_model.predict(train_features)
+        test_clusters = self.kmeans_model.predict(test_features)
+        
+        train_new['customer_cluster'] = train_clusters
+        test_new['customer_cluster'] = test_clusters
         
         return train_new, test_new
     
-    def select_features_conservative(self, train_df, target_col='support_needs', max_features=22):
+    def select_features_conservative(self, train_df, target_col='support_needs', max_features=25):
         """보수적 피처 선택"""
         if target_col not in train_df.columns:
             feature_cols = [col for col in train_df.columns if col not in ['ID']]
@@ -196,8 +219,7 @@ class FeatureEngineer:
         X = train_df[feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
         y = np.clip(train_df[target_col], 0, 2)
         
-        # 분산 필터링
-        variance_selector = VarianceThreshold(threshold=0.001)
+        variance_selector = VarianceThreshold(threshold=0.01)
         X_variance = variance_selector.fit_transform(X)
         variance_features = [feature_cols[i] for i, selected in enumerate(variance_selector.get_support()) if selected]
         
@@ -205,7 +227,6 @@ class FeatureEngineer:
             self.selected_features = variance_features
             return variance_features
         
-        # 상호정보량 기반 선택
         X_var_df = pd.DataFrame(X_variance, columns=variance_features)
         mi_selector = SelectKBest(score_func=mutual_info_classif, k=max_features)
         mi_selector.fit(X_var_df, y)
@@ -220,28 +241,24 @@ class FeatureEngineer:
         if train_df is None or test_df is None or train_df.empty or test_df.empty:
             return None, None
         
-        # 누수 피처 제거
         train_df, test_df = self.remove_leakage_features(train_df, test_df)
         
-        # 시간 피처
         train_df = self.create_temporal_features(train_df)
         test_df = self.create_temporal_features(test_df)
         
-        # 비즈니스 피처
         train_df = self.create_business_features(train_df)
         test_df = self.create_business_features(test_df)
         
-        # 비율 피처
         train_df = self.create_ratio_features(train_df)
         test_df = self.create_ratio_features(test_df)
         
-        # 타겟 인코딩
+        train_df = self.create_interaction_features(train_df)
+        test_df = self.create_interaction_features(test_df)
+        
+        train_df, test_df = self.create_clustering_features(train_df, test_df)
+        
         train_df, test_df = self.create_target_encoding(train_df, test_df)
         
-        # 범주형 인코딩
-        train_df, test_df = self.encode_categorical(train_df, test_df)
-        
-        # 안전한 데이터 변환
         train_df = self.safe_data_conversion(train_df)
         test_df = self.safe_data_conversion(test_df)
         
