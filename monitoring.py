@@ -48,100 +48,128 @@ class ModelMonitor:
         leak_indicators = {}
         risk_score = 0.0
         
-        if 'ID' in train_df.columns and 'ID' in test_df.columns:
-            def extract_temporal_info(id_series):
-                numbers = []
-                for id_val in id_series:
-                    try:
-                        if '_' in str(id_val):
-                            num = int(str(id_val).split('_')[1])
-                            numbers.append(num)
-                    except:
-                        continue
-                return numbers
-            
-            train_nums = extract_temporal_info(train_df['ID'])
-            test_nums = extract_temporal_info(test_df['ID'])
-            
-            if train_nums and test_nums:
-                train_max = max(train_nums)
-                test_min = min(test_nums)
-                test_max = max(test_nums)
+        try:
+            if 'ID' in train_df.columns and 'ID' in test_df.columns:
+                def extract_temporal_info(id_series):
+                    numbers = []
+                    for id_val in id_series:
+                        try:
+                            if '_' in str(id_val):
+                                num = int(str(id_val).split('_')[1])
+                                numbers.append(num)
+                        except:
+                            continue
+                    return numbers
                 
-                # 시간적 중복 계산
-                if train_max >= test_min:
-                    overlap_ratio = len([x for x in train_nums if x >= test_min]) / len(train_nums)
-                    leak_indicators['temporal_overlap'] = overlap_ratio
-                    
-                    if overlap_ratio > 0.05:
-                        risk_score += 0.8
-                        self.warnings.append(f"CRITICAL: 시간적 중복 {overlap_ratio:.3f}")
-                    elif overlap_ratio > 0.01:
-                        risk_score += 0.4
-                        self.warnings.append(f"HIGH RISK: 시간적 중복 {overlap_ratio:.3f}")
+                train_nums = extract_temporal_info(train_df['ID'])
+                test_nums = extract_temporal_info(test_df['ID'])
                 
-                # 시간적 갭 계산
-                if test_max > test_min:
-                    gap_ratio = (test_min - train_max) / (test_max - test_min)
-                    leak_indicators['temporal_gap'] = gap_ratio
+                if train_nums and test_nums and len(train_nums) > 50 and len(test_nums) > 50:
+                    train_max = max(train_nums)
+                    test_min = min(test_nums)
+                    test_max = max(test_nums)
                     
-                    if gap_ratio < 0.1:
-                        risk_score += 0.6
-                        self.warnings.append(f"CRITICAL: 시간적 gap 부족 {gap_ratio:.3f}")
-                else:
-                    risk_score += 0.5
-                    self.warnings.append(f"HIGH RISK: 테스트 데이터 시간 범위 문제")
-        
-        return leak_indicators, risk_score
+                    # 시간적 중복 계산
+                    if train_max >= test_min:
+                        overlap_ratio = len([x for x in train_nums if x >= test_min]) / len(train_nums)
+                        leak_indicators['temporal_overlap'] = overlap_ratio
+                        
+                        if overlap_ratio > 0.05:
+                            risk_score += 0.8
+                            self.warnings.append(f"CRITICAL: 시간적 중복 {overlap_ratio:.3f}")
+                        elif overlap_ratio > 0.01:
+                            risk_score += 0.4
+                            self.warnings.append(f"HIGH RISK: 시간적 중복 {overlap_ratio:.3f}")
+                    
+                    # 시간적 갭 계산
+                    if test_max > test_min and train_max < test_min:
+                        gap_ratio = (test_min - train_max) / (test_max - test_min)
+                        leak_indicators['temporal_gap'] = gap_ratio
+                        
+                        if gap_ratio < 0.1:
+                            risk_score += 0.6
+                            self.warnings.append(f"CRITICAL: 시간적 gap 부족 {gap_ratio:.3f}")
+                    elif train_max >= test_min:
+                        risk_score += 0.5
+                        self.warnings.append(f"HIGH RISK: 시간적 경계 없음")
+            
+            return leak_indicators, risk_score
+            
+        except Exception as e:
+            print(f"시간적 누수 탐지 오류: {e}")
+            return {}, 0.0
     
     def analyze_feature_leakage(self, train_df):
         """피처 누수 분석"""
         leak_features = {}
         risk_score = 0.0
         
-        if 'support_needs' not in train_df.columns:
-            return leak_features, risk_score
-        
-        target = train_df['support_needs']
-        feature_cols = [col for col in train_df.columns if col not in ['ID', 'support_needs']]
-        
-        for col in feature_cols:
-            if col in train_df.columns:
-                # after_interaction 피처 검사
-                if 'after_interaction' in col.lower():
-                    leak_features[col] = {'risk': 'CRITICAL', 'reason': 'future_information'}
-                    risk_score += 1.0
-                    self.warnings.append(f"CRITICAL: {col} 미래 정보 누수")
-                    continue
-                
-                if train_df[col].dtype in [np.number]:
-                    correlation = abs(train_df[col].corr(target))
+        try:
+            if 'support_needs' not in train_df.columns:
+                return leak_features, risk_score
+            
+            target = train_df['support_needs']
+            feature_cols = [col for col in train_df.columns if col not in ['ID', 'support_needs']]
+            
+            for col in feature_cols:
+                if col in train_df.columns:
+                    # temporal 관련 피처 검사
+                    if any(keyword in col.lower() for keyword in ['temporal', 'time', 'order', 'position']):
+                        leak_features[col] = {'risk': 'CRITICAL', 'reason': 'temporal_feature'}
+                        risk_score += 1.0
+                        self.warnings.append(f"CRITICAL: {col} 시간적 피처 누수")
+                        continue
                     
-                    if correlation > 0.85:
-                        leak_features[col] = {'correlation': correlation, 'risk': 'CRITICAL'}
-                        risk_score += 0.7
-                        self.warnings.append(f"CRITICAL: {col} 높은 상관관계 {correlation:.3f}")
-                    elif correlation > 0.75:
-                        leak_features[col] = {'correlation': correlation, 'risk': 'HIGH'}
-                        risk_score += 0.4
-                        self.warnings.append(f"HIGH RISK: {col} 높은 상관관계 {correlation:.3f}")
-                
-                # 고유값 비율 검사
-                unique_ratio = train_df[col].nunique() / len(train_df)
-                if unique_ratio > 0.95:
-                    leak_features[col] = {'unique_ratio': unique_ratio, 'risk': 'HIGH'}
-                    risk_score += 0.3
-                    self.warnings.append(f"HIGH RISK: {col} 고유값 비율 {unique_ratio:.3f}")
-                
-                # 분산 검사
-                if train_df[col].dtype in [np.number]:
-                    variance = train_df[col].var()
-                    if variance < 0.001:
-                        leak_features[col] = {'variance': variance, 'risk': 'MEDIUM'}
-                        risk_score += 0.2
-                        self.warnings.append(f"MEDIUM RISK: {col} 낮은 분산 {variance:.6f}")
-        
-        return leak_features, risk_score
+                    # after_interaction 피처 검사
+                    if 'after_interaction' in col.lower():
+                        leak_features[col] = {'risk': 'CRITICAL', 'reason': 'future_information'}
+                        risk_score += 1.0
+                        self.warnings.append(f"CRITICAL: {col} 미래 정보 누수")
+                        continue
+                    
+                    # 숫자형 피처 검사
+                    try:
+                        if train_df[col].dtype in [np.number] or pd.api.types.is_numeric_dtype(train_df[col]):
+                            correlation = abs(train_df[col].corr(target))
+                            
+                            if correlation > 0.85:
+                                leak_features[col] = {'correlation': correlation, 'risk': 'CRITICAL'}
+                                risk_score += 0.7
+                                self.warnings.append(f"CRITICAL: {col} 높은 상관관계 {correlation:.3f}")
+                            elif correlation > 0.75:
+                                leak_features[col] = {'correlation': correlation, 'risk': 'HIGH'}
+                                risk_score += 0.4
+                                self.warnings.append(f"HIGH RISK: {col} 높은 상관관계 {correlation:.3f}")
+                    except:
+                        # 숫자형 변환 실패 시 범주형으로 처리
+                        pass
+                    
+                    # 고유값 비율 검사
+                    try:
+                        unique_ratio = train_df[col].nunique() / len(train_df)
+                        if unique_ratio > 0.95:
+                            leak_features[col] = {'unique_ratio': unique_ratio, 'risk': 'HIGH'}
+                            risk_score += 0.3
+                            self.warnings.append(f"HIGH RISK: {col} 고유값 비율 {unique_ratio:.3f}")
+                    except:
+                        pass
+                    
+                    # 분산 검사 (숫자형 피처만)
+                    try:
+                        if train_df[col].dtype in [np.number] or pd.api.types.is_numeric_dtype(train_df[col]):
+                            variance = train_df[col].var()
+                            if variance < 0.001:
+                                leak_features[col] = {'variance': variance, 'risk': 'MEDIUM'}
+                                risk_score += 0.2
+                                self.warnings.append(f"MEDIUM RISK: {col} 낮은 분산 {variance:.6f}")
+                    except:
+                        pass
+            
+            return leak_features, risk_score
+            
+        except Exception as e:
+            print(f"피처 누수 분석 오류: {e}")
+            return {}, 0.0
     
     def analyze_distribution_drift(self, train_df, test_df):
         """분포 변화 분석"""

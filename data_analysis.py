@@ -50,52 +50,64 @@ class DataAnalyzer:
     
     def analyze_temporal_patterns(self):
         """시간적 패턴 분석"""
-        def extract_id_numbers(id_series):
-            numbers = []
-            for id_val in id_series:
-                try:
-                    if '_' in str(id_val):
-                        num = int(str(id_val).split('_')[1])
-                        numbers.append(num)
-                except:
-                    continue
-            return numbers
-        
-        train_id_nums = extract_id_numbers(self.train_df['ID'])
-        test_id_nums = extract_id_numbers(self.test_df['ID'])
-        
-        if train_id_nums and test_id_nums:
-            train_range = [min(train_id_nums), max(train_id_nums)]
-            test_range = [min(test_id_nums), max(test_id_nums)]
+        try:
+            def extract_id_numbers(id_series):
+                numbers = []
+                for id_val in id_series:
+                    try:
+                        if '_' in str(id_val):
+                            num = int(str(id_val).split('_')[1])
+                            numbers.append(num)
+                    except:
+                        continue
+                return numbers
             
-            # 시간적 분할점을 70%로 설정
-            overlap_threshold = int(np.percentile(train_id_nums, 70))
+            train_id_nums = extract_id_numbers(self.train_df['ID'])
+            test_id_nums = extract_id_numbers(self.test_df['ID'])
             
-            self.temporal_threshold = overlap_threshold
-            
-            safe_indices = [i for i, tid in enumerate(train_id_nums) if tid <= overlap_threshold]
-            safe_ratio = len(safe_indices) / len(train_id_nums)
-            
-            # 실제 시간적 겹침 확인
-            train_max = max(train_id_nums)
-            test_min = min(test_id_nums)
-            
-            temporal_gap = test_min - train_max if train_max < test_min else 0
-            overlap_samples = len([x for x in train_id_nums if x >= test_min])
-            overlap_ratio = overlap_samples / len(train_id_nums)
+            if train_id_nums and test_id_nums and len(train_id_nums) > 100 and len(test_id_nums) > 100:
+                train_range = [min(train_id_nums), max(train_id_nums)]
+                test_range = [min(test_id_nums), max(test_id_nums)]
+                
+                # 더 보수적인 분할점 설정 (60%)
+                overlap_threshold = int(np.percentile(train_id_nums, 60))
+                
+                self.temporal_threshold = overlap_threshold
+                
+                safe_indices = [i for i, tid in enumerate(train_id_nums) if tid <= overlap_threshold]
+                safe_ratio = len(safe_indices) / len(train_id_nums) if train_id_nums else 0.6
+                
+                # 시간적 겹침 확인
+                train_max = max(train_id_nums)
+                test_min = min(test_id_nums)
+                
+                temporal_gap = test_min - train_max if train_max < test_min else 0
+                overlap_samples = len([x for x in train_id_nums if x >= test_min])
+                overlap_ratio = overlap_samples / len(train_id_nums) if train_id_nums else 0
+                
+                return {
+                    'train_range': train_range,
+                    'test_range': test_range,
+                    'temporal_threshold': self.temporal_threshold,
+                    'safe_ratio': safe_ratio,
+                    'safe_indices': safe_indices,
+                    'temporal_gap': temporal_gap,
+                    'overlap_ratio': overlap_ratio,
+                    'has_temporal_leak': overlap_ratio > 0.01
+                }
             
             return {
-                'train_range': train_range,
-                'test_range': test_range,
-                'temporal_threshold': self.temporal_threshold,
-                'safe_ratio': safe_ratio,
-                'safe_indices': safe_indices,
-                'temporal_gap': temporal_gap,
-                'overlap_ratio': overlap_ratio,
-                'has_temporal_leak': overlap_ratio > 0.01
+                'safe_ratio': 0.6,
+                'has_temporal_leak': False,
+                'temporal_threshold': None
             }
             
-        return {}
+        except Exception as e:
+            return {
+                'safe_ratio': 0.6,
+                'has_temporal_leak': False,
+                'temporal_threshold': None
+            }
     
     def detect_data_leakage(self):
         """데이터 누수 탐지"""

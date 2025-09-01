@@ -20,6 +20,14 @@ class FeatureEngineer:
         """안전한 데이터 변환"""
         df_clean = df.copy()
         
+        # 범주형 컬럼 먼저 확인하고 처리
+        categorical_cols = ['gender', 'subscription_type']
+        for col in categorical_cols:
+            if col in df_clean.columns:
+                # 범주형 데이터는 문자열로 유지
+                df_clean[col] = df_clean[col].astype(str).fillna('Unknown')
+        
+        # 숫자형 컬럼만 처리
         numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
         
         for col in numeric_cols:
@@ -214,29 +222,34 @@ class FeatureEngineer:
         if train_df is None or test_df is None or train_df.empty or test_df.empty:
             return None, None
         
-        # 누수 피처 제거
-        train_df, test_df = self.remove_leakage_features(train_df, test_df)
-        
-        # 기본 피처 생성
-        train_df = self.create_basic_features(train_df)
-        test_df = self.create_basic_features(test_df)
-        
-        # 비율 피처 생성
-        train_df = self.create_ratio_features(train_df)
-        test_df = self.create_ratio_features(test_df)
-        
-        # 상호작용 피처 생성
-        train_df = self.create_interaction_features(train_df)
-        test_df = self.create_interaction_features(test_df)
-        
-        # 타겟 인코딩
-        train_df, test_df = self.create_target_encoding(train_df, test_df)
-        
-        # 안전한 데이터 변환
-        train_df = self.safe_data_conversion(train_df)
-        test_df = self.safe_data_conversion(test_df)
-        
-        return train_df, test_df
+        try:
+            # 누수 피처 제거
+            train_df, test_df = self.remove_leakage_features(train_df, test_df)
+            
+            # 기본 피처 생성 (temporal 관련 피처 제외)
+            train_df = self.create_basic_features(train_df)
+            test_df = self.create_basic_features(test_df)
+            
+            # 비율 피처 생성
+            train_df = self.create_ratio_features(train_df)
+            test_df = self.create_ratio_features(test_df)
+            
+            # 상호작용 피처 생성
+            train_df = self.create_interaction_features(train_df)
+            test_df = self.create_interaction_features(test_df)
+            
+            # 타겟 인코딩
+            train_df, test_df = self.create_target_encoding(train_df, test_df)
+            
+            # 안전한 데이터 변환 (범주형 데이터 보존)
+            train_df = self.safe_data_conversion(train_df)
+            test_df = self.safe_data_conversion(test_df)
+            
+            return train_df, test_df
+            
+        except Exception as e:
+            print(f"피처 생성 중 오류: {e}")
+            return None, None
 
 def main():
     try:

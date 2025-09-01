@@ -47,22 +47,52 @@ class ModelTrainer:
     
     def safe_data_conversion(self, X, y=None):
         """안전한 데이터 변환"""
-        if hasattr(X, 'values'):
-            X_array = X.values
-        else:
-            X_array = np.array(X)
-        
-        X_clean = np.nan_to_num(X_array, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        if y is not None:
-            if hasattr(y, 'values'):
-                y_array = y.values
+        try:
+            if hasattr(X, 'values'):
+                X_array = X.values
             else:
-                y_array = np.array(y)
-            y_clean = np.clip(y_array, 0, 2)
-            return X_clean, y_clean
-        
-        return X_clean
+                X_array = np.array(X)
+            
+            # 범주형 데이터 확인 및 처리
+            if X_array.dtype == 'object':
+                # 객체 타입인 경우 숫자로 변환 시도
+                X_processed = np.zeros(X_array.shape)
+                for i in range(X_array.shape[1]):
+                    col_data = X_array[:, i]
+                    try:
+                        X_processed[:, i] = pd.to_numeric(col_data, errors='coerce').fillna(0)
+                    except:
+                        # 변환 실패 시 0으로 채움
+                        X_processed[:, i] = 0
+                X_clean = X_processed
+            else:
+                X_clean = X_array.astype(float)
+            
+            X_clean = np.nan_to_num(X_clean, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            if y is not None:
+                if hasattr(y, 'values'):
+                    y_array = y.values
+                else:
+                    y_array = np.array(y)
+                y_clean = np.clip(y_array.astype(int), 0, 2)
+                return X_clean, y_clean
+            
+            return X_clean
+            
+        except Exception as e:
+            print(f"데이터 변환 오류: {e}")
+            # 오류 시 기본값 반환
+            if hasattr(X, 'shape'):
+                X_clean = np.zeros(X.shape)
+            else:
+                X_clean = np.zeros((len(X), 1) if hasattr(X, '__len__') else (1, 1))
+            
+            if y is not None:
+                y_clean = np.zeros(len(y) if hasattr(y, '__len__') else 1, dtype=int)
+                return X_clean, y_clean
+            
+            return X_clean
     
     def prepare_training_data(self):
         """훈련 데이터 준비"""

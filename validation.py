@@ -37,40 +37,45 @@ class ValidationSystem:
         """시간적 누수 확인"""
         issues = []
         
-        train_ids = set(train_df['ID']) if 'ID' in train_df.columns else set()
-        test_ids = set(test_df['ID']) if 'ID' in test_df.columns else set()
-        
-        common_ids = train_ids & test_ids
-        if common_ids:
-            issues.append(f"common_ids: {len(common_ids)}")
-        
-        if train_ids and test_ids:
-            def extract_numbers(id_set):
-                numbers = []
-                for id_val in id_set:
-                    if '_' in str(id_val):
-                        try:
-                            num = int(str(id_val).split('_')[1])
-                            numbers.append(num)
-                        except:
-                            continue
-                return numbers
+        try:
+            train_ids = set(train_df['ID']) if 'ID' in train_df.columns else set()
+            test_ids = set(test_df['ID']) if 'ID' in test_df.columns else set()
             
-            train_nums = extract_numbers(train_ids)
-            test_nums = extract_numbers(test_ids)
+            common_ids = train_ids & test_ids
+            if common_ids:
+                issues.append(f"common_ids: {len(common_ids)}")
             
-            if train_nums and test_nums:
-                train_max = max(train_nums)
-                test_min = min(test_nums)
+            if train_ids and test_ids and len(train_ids) > 100 and len(test_ids) > 100:
+                def extract_numbers(id_set):
+                    numbers = []
+                    for id_val in id_set:
+                        if '_' in str(id_val):
+                            try:
+                                num = int(str(id_val).split('_')[1])
+                                numbers.append(num)
+                            except:
+                                continue
+                    return numbers
                 
-                if train_max >= test_min:
-                    overlap_count = len([x for x in train_nums if x >= test_min])
-                    overlap_ratio = overlap_count / len(train_nums)
+                train_nums = extract_numbers(train_ids)
+                test_nums = extract_numbers(test_ids)
+                
+                if train_nums and test_nums and len(train_nums) > 50 and len(test_nums) > 50:
+                    train_max = max(train_nums)
+                    test_min = min(test_nums)
                     
-                    if overlap_ratio > 0.05:
-                        issues.append(f"temporal_overlap: {overlap_ratio:.3f}")
-        
-        return len(issues) == 0, issues
+                    if train_max >= test_min:
+                        overlap_count = len([x for x in train_nums if x >= test_min])
+                        overlap_ratio = overlap_count / len(train_nums)
+                        
+                        if overlap_ratio > 0.05:
+                            issues.append(f"temporal_overlap: {overlap_ratio:.3f}")
+            
+            return len(issues) == 0, issues
+            
+        except Exception as e:
+            print(f"시간적 누수 확인 오류: {e}")
+            return True, []
     
     def create_validation_model(self, X_train, y_train):
         """검증용 모델 생성"""

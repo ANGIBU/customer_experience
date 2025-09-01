@@ -23,82 +23,114 @@ class DataPreprocessor:
         """안전한 데이터 변환"""
         df_clean = df.copy()
         
-        numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
-        
-        for col in numeric_cols:
+        # 범주형 컬럼 먼저 처리
+        categorical_cols = ['gender', 'subscription_type']
+        for col in categorical_cols:
             if col in df_clean.columns:
-                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
-                df_clean[col] = df_clean[col].replace([np.inf, -np.inf], np.nan)
-                df_clean[col] = df_clean[col].fillna(df_clean[col].median())
+                # 범주형 데이터는 문자열로 유지
+                df_clean[col] = df_clean[col].astype(str).fillna('Unknown')
+        
+        # 숫자형 컬럼만 안전하게 변환
+        for col in df_clean.columns:
+            if col not in categorical_cols and col not in ['ID']:
+                try:
+                    # 숫자형으로 변환 가능한지 확인
+                    df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+                    df_clean[col] = df_clean[col].replace([np.inf, -np.inf], np.nan)
+                    df_clean[col] = df_clean[col].fillna(df_clean[col].median())
+                except:
+                    # 변환할 수 없으면 문자열로 유지
+                    df_clean[col] = df_clean[col].astype(str).fillna('Unknown')
         
         return df_clean
         
     def apply_temporal_filtering(self, train_df):
-        """시간적 필터링"""
+        """시간적 필터링 (temporal 피처 생성 없이)"""
         if 'ID' not in train_df.columns:
             return train_df
         
-        # ID에서 시간 정보 추출
-        temporal_ids = []
-        for id_val in train_df['ID']:
-            try:
-                if '_' in str(id_val):
-                    num = int(str(id_val).split('_')[1])
-                    temporal_ids.append(num)
-                else:
+        try:
+            # ID에서 시간 정보 추출 (임시로만 사용)
+            temporal_ids = []
+            for id_val in train_df['ID']:
+                try:
+                    if '_' in str(id_val):
+                        num = int(str(id_val).split('_')[1])
+                        temporal_ids.append(num)
+                    else:
+                        temporal_ids.append(0)
+                except:
                     temporal_ids.append(0)
-            except:
-                temporal_ids.append(0)
-        
-        train_df = train_df.copy()
-        train_df['temporal_order'] = temporal_ids
-        
-        # 70% 분위수를 기준으로 안전한 데이터만 사용
-        threshold = np.percentile(temporal_ids, 70)
-        safe_mask = train_df['temporal_order'] <= threshold
-        
-        filtered_data = train_df[safe_mask].copy()
-        
-        # temporal_order 컬럼 제거
-        if 'temporal_order' in filtered_data.columns:
-            filtered_data = filtered_data.drop('temporal_order', axis=1)
-        
-        return filtered_data
+            
+            # 60% 분위수를 기준으로 안전한 데이터만 사용
+            if temporal_ids and len(temporal_ids) > 100:
+                threshold = np.percentile(temporal_ids, 60)
+                safe_indices = [i for i, tid in enumerate(temporal_ids) if tid <= threshold]
+                
+                if len(safe_indices) > len(temporal_ids) * 0.4:  # 최소 40% 데이터 보장
+                    filtered_data = train_df.iloc[safe_indices].copy()
+                else:
+                    filtered_data = train_df.copy()
+            else:
+                filtered_data = train_df.copy()
+            
+            return filtered_data
+            
+        except Exception as e:
+            print(f"시간적 필터링 오류: {e}")
+            return train_df
     
     def handle_missing_values(self, train_df, test_df):
         """결측치 처리"""
         train_clean = self.safe_data_conversion(train_df)
         test_clean = self.safe_data_conversion(test_df)
         
-        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
-        
-        # 생성된 피처들도 포함
+        # 숫자형 피처만 선택해서 처리
+        numeric_cols = []
         for col in train_clean.columns:
-            if any(keyword in col for keyword in ['activity_score', 'payment_stability', 'ratio', 'product', 'encoded']):
-                if col not in numeric_cols and train_clean[col].dtype in [np.number]:
+            if col not in ['ID', 'gender', 'subscription_type', 'support_needs']:
+                try:
+                    # 숫자형 변환이 가능한지 확인
+                    pd.to_numeric(train_clean[col], errors='raise')
                     numeric_cols.append(col)
+                except:
+                    # 숫자형이 아니면 제외
+                    continue
         
+        # 공통 숫자형 피처만 처리
         common_numeric = [col for col in numeric_cols if col in train_clean.columns and col in test_clean.columns]
         
         if common_numeric:
-            if self.imputer is None:
-                self.imputer = KNNImputer(n_neighbors=5, weights='distance')
-                train_imputed = self.imputer.fit_transform(train_clean[common_numeric])
-            else:
-                train_imputed = self.imputer.transform(train_clean[common_numeric])
-            
-            test_imputed = self.imputer.transform(test_clean[common_numeric])
-            
-            train_clean[common_numeric] = train_imputed
-            test_clean[common_numeric] = test_imputed
+            try:
+                if self.imputer is None:
+                    self.imputer = KNNImputer(n_neighbors=5, weights='distance')
+                    train_imputed = self.imputer.fit_transform(train_clean[common_numeric])
+                else:
+                    train_imputed = self.imputer.transform(train_clean[common_numeric])
+                
+                test_imputed = self.imputer.transform(test_clean[common_numeric])
+                
+                train_clean[common_numeric] = train_imputed
+                test_clean[common_numeric] = test_imputed
+            except Exception as e:
+                print(f"KNN imputer 오류, 기본값으로 대체: {e}")
+                # KNN imputer 실패 시 중앙값으로 대체
+                for col in common_numeric:
+                    median_val = train_clean[col].median()
+                    train_clean[col] = train_clean[col].fillna(median_val)
+                    test_clean[col] = test_clean[col].fillna(median_val)
         
         # 범주형 피처 결측치 처리
         categorical_cols = ['gender', 'subscription_type']
         for col in categorical_cols:
             if col in train_clean.columns and col in test_clean.columns:
-                mode_value = train_clean[col].mode()[0] if not train_clean[col].mode().empty else 'Unknown'
-                train_clean[col] = train_clean[col].fillna(mode_value)
-                test_clean[col] = test_clean[col].fillna(mode_value)
+                try:
+                    mode_value = train_clean[col].mode()[0] if not train_clean[col].mode().empty else 'Unknown'
+                    train_clean[col] = train_clean[col].fillna(mode_value)
+                    test_clean[col] = test_clean[col].fillna(mode_value)
+                except:
+                    train_clean[col] = train_clean[col].fillna('Unknown')
+                    test_clean[col] = test_clean[col].fillna('Unknown')
         
         return train_clean, test_clean
     
@@ -300,75 +332,126 @@ class DataPreprocessor:
         
         return train_df, test_df
     
-    def prepare_temporal_split(self, train_df, test_df, val_size=0.20):
-        """시간적 분할"""
+    def prepare_temporal_split(self, train_df, test_df, val_size=0.25):
+        """시간적 분할 (안전한 버전)"""
         if train_df is None or test_df is None:
             return None, None, None, None, None, None
             
-        if 'support_needs' not in train_df.columns:
-            feature_cols = [col for col in train_df.columns if col not in ['ID']]
-            common_features = [col for col in feature_cols if col in test_df.columns]
+        try:
+            if 'support_needs' not in train_df.columns:
+                feature_cols = [col for col in train_df.columns if col not in ['ID']]
+                common_features = [col for col in feature_cols if col in test_df.columns]
+                
+                if not common_features:
+                    raise ValueError("공통 피처 없음")
+                    
+                X_train = train_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+                X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+                test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
+                
+                X_train_split, X_val_split, y_dummy, y_val_dummy = train_test_split(
+                    X_train, np.zeros(len(X_train)), test_size=val_size, random_state=42
+                )
+                
+                return X_train_split, X_val_split, y_dummy[:len(X_train_split)], y_val_dummy, X_test, test_ids
+
+            # 공통 피처 추출 (안전하게)
+            train_cols = set(train_df.columns)
+            test_cols = set(test_df.columns)
+            common_features = list((train_cols & test_cols) - {'ID', 'support_needs'})
             
             if not common_features:
                 raise ValueError("공통 피처 없음")
-                
-            X_train = train_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
-            X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
-            test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
             
-            X_train_split, X_val_split, y_dummy, y_val_dummy = train_test_split(
-                X_train, np.zeros(len(X_train)), test_size=val_size, random_state=42
-            )
+            common_features = sorted(common_features)
             
-            return X_train_split, X_val_split, y_dummy[:len(X_train_split)], y_val_dummy, X_test, test_ids
-        
-        # 시간적 분할을 위한 ID 기반 정렬
-        temporal_ids = []
-        for id_val in train_df['ID']:
+            # 범주형 데이터 안전 처리
+            safe_train = train_df.copy()
+            categorical_cols = ['gender', 'subscription_type']
+            
+            for col in categorical_cols:
+                if col in safe_train.columns:
+                    if col in common_features:
+                        # 범주형 데이터를 숫자로 안전하게 변환
+                        le_mapping = {'M': 0, 'F': 1, 'Unknown': 2}
+                        if col == 'gender':
+                            safe_train[col] = safe_train[col].map(le_mapping).fillna(2)
+                        else:
+                            # subscription_type 처리
+                            unique_vals = safe_train[col].unique()
+                            mapping = {val: i for i, val in enumerate(unique_vals)}
+                            safe_train[col] = safe_train[col].map(mapping).fillna(0)
+            
+            # 시간적 분할 시도
             try:
-                if '_' in str(id_val):
-                    num = int(str(id_val).split('_')[1])
-                    temporal_ids.append(num)
+                # ID에서 시간 정보 추출
+                temporal_ids = []
+                for id_val in safe_train['ID']:
+                    try:
+                        if '_' in str(id_val):
+                            num = int(str(id_val).split('_')[1])
+                            temporal_ids.append(num)
+                        else:
+                            temporal_ids.append(0)
+                    except:
+                        temporal_ids.append(0)
+                
+                if temporal_ids and len(set(temporal_ids)) > 10:
+                    # 시간 순으로 정렬
+                    safe_train['temp_order'] = temporal_ids
+                    safe_train = safe_train.sort_values('temp_order')
+                    
+                    # 시간적 분할
+                    split_point = int(len(safe_train) * (1 - val_size))
+                    
+                    train_part = safe_train.iloc[:split_point]
+                    val_part = safe_train.iloc[split_point:]
+                    
+                    safe_train = safe_train.drop('temp_order', axis=1)
+                    train_part = train_part.drop('temp_order', axis=1)
+                    val_part = val_part.drop('temp_order', axis=1)
                 else:
-                    temporal_ids.append(0)
-            except:
-                temporal_ids.append(0)
-        
-        train_df_temp = train_df.copy()
-        train_df_temp['temporal_order'] = temporal_ids
-        
-        # 시간 순으로 정렬
-        train_df_temp = train_df_temp.sort_values('temporal_order')
-        
-        # 공통 피처 추출
-        train_cols = set(train_df_temp.columns)
-        test_cols = set(test_df.columns)
-        common_features = list((train_cols & test_cols) - {'ID', 'support_needs', 'temporal_order'})
-        
-        if not common_features:
-            raise ValueError("공통 피처 없음")
-        
-        common_features = sorted(common_features)
-        
-        # 시간적 분할 (앞의 80%를 훈련, 뒤의 20%를 검증)
-        split_point = int(len(train_df_temp) * (1 - val_size))
-        
-        train_part = train_df_temp.iloc[:split_point]
-        val_part = train_df_temp.iloc[split_point:]
-        
-        # 피처와 타겟 분리
-        X_train = train_part[common_features].fillna(0).replace([np.inf, -np.inf], 0)
-        y_train = train_part['support_needs']
-        X_val = val_part[common_features].fillna(0).replace([np.inf, -np.inf], 0)
-        y_val = val_part['support_needs']
-        
-        X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
-        test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
-        
-        # SMOTE 보수적 적용
-        X_train_resampled, y_train_resampled = self.apply_smote_conservative(X_train, y_train)
-        
-        return X_train_resampled, X_val, y_train_resampled, y_val, X_test, test_ids
+                    # 랜덤 분할로 대체
+                    train_part, val_part = train_test_split(
+                        safe_train, test_size=val_size, random_state=42, stratify=safe_train['support_needs']
+                    )
+                    
+            except Exception as e:
+                print(f"시간적 분할 실패, 랜덤 분할 사용: {e}")
+                # 랜덤 분할로 대체
+                train_part, val_part = train_test_split(
+                    safe_train, test_size=val_size, random_state=42, stratify=safe_train['support_needs']
+                )
+            
+            # 테스트 데이터도 동일하게 처리
+            safe_test = test_df.copy()
+            for col in categorical_cols:
+                if col in safe_test.columns:
+                    if col in common_features:
+                        if col == 'gender':
+                            safe_test[col] = safe_test[col].map(le_mapping).fillna(2)
+                        else:
+                            unique_vals = train_df[col].unique() if col in train_df.columns else safe_test[col].unique()
+                            mapping = {val: i for i, val in enumerate(unique_vals)}
+                            safe_test[col] = safe_test[col].map(mapping).fillna(0)
+            
+            # 피처와 타겟 분리
+            X_train = train_part[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+            y_train = train_part['support_needs']
+            X_val = val_part[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+            y_val = val_part['support_needs']
+            
+            X_test = safe_test[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+            test_ids = safe_test['ID'] if 'ID' in safe_test.columns else pd.Series(range(len(safe_test)))
+            
+            # SMOTE 보수적 적용
+            X_train_resampled, y_train_resampled = self.apply_smote_conservative(X_train, y_train)
+            
+            return X_train_resampled, X_val, y_train_resampled, y_val, X_test, test_ids
+            
+        except Exception as e:
+            print(f"데이터 분할 오류: {e}")
+            return None, None, None, None, None, None
 
 def main():
     try:
