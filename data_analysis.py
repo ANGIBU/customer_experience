@@ -288,7 +288,8 @@ class DataAnalyzer:
     
     def run_analysis(self):
         """분석 실행"""
-        if self.load_data() == (None, None):
+        train_data, test_data = self.load_data()
+        if train_data is None or test_data is None:
             return {}
         
         integrity_ok, integrity_issues, missing_info = self.validate_data_integrity()
