@@ -313,6 +313,10 @@ class DataAnalyzer:
         if train_data is None or test_data is None:
             return {}
         
+        # 데이터 무결성 검증을 제일 먼저 실행하고, 빈 DataFrame 문제를 해결
+        if self.train_df.empty or self.test_df.empty:
+            return {}
+        
         integrity_ok, integrity_issues, missing_info = self.validate_data_integrity()
         self.analysis_results['integrity'] = {
             'passed': integrity_ok,

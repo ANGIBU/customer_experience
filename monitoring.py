@@ -5,8 +5,7 @@ import numpy as np
 from sklearn.model_selection import TimeSeriesSplit, StratifiedKFold
 from sklearn.metrics import accuracy_score, log_loss
 from sklearn.ensemble import RandomForestClassifier
-from scipy.stats import ks_2samp, chi2_contingency
-from scipy.spatial.distance import wasserstein_distance
+from scipy.stats import ks_2samp, chi2_contingency, wasserstein_distance
 import warnings
 warnings.filterwarnings('ignore')
 
