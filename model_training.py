@@ -388,19 +388,35 @@ class ModelTrainer:
             except Exception as e:
                 model_scores[name] = 0.0
         
-        total_score = sum(model_scores.values())
-        if total_score > 0:
-            for name in model_scores:
-                self.ensemble_weights[name] = model_scores[name] / total_score
+        if not model_scores or all(score <= 0.45 for score in model_scores.values()):
+            conservative_weights = {
+                'lightgbm': 0.20,
+                'xgboost': 0.18,
+                'catboost': 0.16,
+                'random_forest': 0.14,
+                'extra_trees': 0.12,
+                'logistic_regression': 0.10,
+                'svm': 0.05,
+                'gradient_boosting': 0.05
+            }
+            
+            for name in self.models.keys():
+                if name in conservative_weights:
+                    self.ensemble_weights[name] = conservative_weights[name]
+                else:
+                    self.ensemble_weights[name] = 0.02
         else:
-            num_models = len(model_scores)
-            for name in model_scores:
-                self.ensemble_weights[name] = 1.0 / num_models
-        
-        boosting_models = ['lightgbm', 'xgboost', 'catboost', 'gradient_boosting']
-        for model_name in boosting_models:
-            if model_name in self.ensemble_weights:
-                self.ensemble_weights[model_name] *= 1.1
+            min_score = min(model_scores.values())
+            adjusted_scores = {name: max(score - min_score, 0.01) for name, score in model_scores.items()}
+            
+            total_score = sum(adjusted_scores.values())
+            if total_score > 0:
+                for name in adjusted_scores:
+                    self.ensemble_weights[name] = adjusted_scores[name] / total_score
+            else:
+                num_models = len(model_scores)
+                for name in model_scores:
+                    self.ensemble_weights[name] = 1.0 / num_models
         
         total_weight = sum(self.ensemble_weights.values())
         for name in self.ensemble_weights:

@@ -300,7 +300,7 @@ class PredictionSystem:
         except Exception:
             return pred_proba
     
-    def apply_temperature_scaling(self, pred_proba, temperature=1.08):
+    def apply_temperature_scaling(self, pred_proba, temperature=1.02):
         """온도 스케일링"""
         try:
             log_proba = np.log(np.clip(pred_proba, 1e-8, 1-1e-8))
@@ -314,7 +314,7 @@ class PredictionSystem:
     
     def apply_class_balance_adjustment(self, pred_proba):
         """클래스 균형 조정"""
-        class_adjustments = np.array([0.98, 1.05, 1.02])
+        class_adjustments = np.array([1.00, 1.02, 1.01])
         
         adjusted_proba = pred_proba * class_adjustments[np.newaxis, :]
         

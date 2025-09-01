@@ -294,28 +294,36 @@ class DataPreprocessor:
         
         if 'temporal_id' in X.columns:
             temporal_ids = X['temporal_id'].values
-            sorted_indices = np.argsort(temporal_ids)
+            unique_ids = np.unique(temporal_ids)
+            sorted_unique_ids = np.sort(unique_ids)
             
-            total_samples = len(sorted_indices)
-            gap_samples = int(total_samples * gap_size)
-            val_samples = int(total_samples * val_size)
-            train_samples = total_samples - val_samples - gap_samples
+            total_unique_ids = len(sorted_unique_ids)
+            gap_ids = int(total_unique_ids * gap_size)
+            val_ids = int(total_unique_ids * val_size)
+            train_ids = total_unique_ids - val_ids - gap_ids
             
-            if train_samples < 15000 or val_samples < 3000:
+            if train_ids < total_unique_ids * 0.6:
                 X_train, X_val, y_train, y_val = train_test_split(
                     X, y, test_size=val_size, random_state=42, stratify=y
                 )
+                
+                if 'temporal_id' in X_train.columns:
+                    X_train = X_train.drop('temporal_id', axis=1)
+                    X_val = X_val.drop('temporal_id', axis=1)
+                    if 'temporal_id' in X_test.columns:
+                        X_test = X_test.drop('temporal_id', axis=1)
             else:
-                train_indices = sorted_indices[:train_samples]
-                val_indices = sorted_indices[train_samples + gap_samples:]
+                train_unique_ids = sorted_unique_ids[:train_ids]
+                val_unique_ids = sorted_unique_ids[train_ids + gap_ids:]
                 
-                X_train = X.iloc[train_indices]
-                X_val = X.iloc[val_indices]
-                y_train = y.iloc[train_indices]
-                y_val = y.iloc[val_indices]
+                train_mask = np.isin(temporal_ids, train_unique_ids)
+                val_mask = np.isin(temporal_ids, val_unique_ids)
                 
-                X_train = X_train.drop('temporal_id', axis=1)
-                X_val = X_val.drop('temporal_id', axis=1)
+                X_train = X[train_mask].drop('temporal_id', axis=1)
+                X_val = X[val_mask].drop('temporal_id', axis=1)
+                y_train = y[train_mask]
+                y_val = y[val_mask]
+                
                 if 'temporal_id' in X_test.columns:
                     X_test = X_test.drop('temporal_id', axis=1)
         else:

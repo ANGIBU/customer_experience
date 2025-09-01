@@ -14,6 +14,7 @@ from preprocessing import DataPreprocessor
 from model_training import ModelTrainer
 from validation import ValidationSystem
 from prediction import PredictionSystem
+from monitoring import ModelMonitor
 
 class AISystem:
     def __init__(self):
@@ -281,7 +282,32 @@ class AISystem:
             print(f"대체 예측 오류: {e}")
             return False, None
     
-    def generate_report(self):
+    def step7_monitoring(self, train_df, test_df, X_train, y_train, validation_results):
+        """정밀 모니터링"""
+        print("정밀 모니터링 시작...")
+        try:
+            monitor = ModelMonitor()
+            
+            cv_results = validation_results.get('cross_validation', {})
+            validation_score = validation_results.get('overall_score', 0.0)
+            
+            monitoring_results = monitor.comprehensive_monitoring(
+                train_df, test_df, X_train, y_train, cv_results, validation_score
+            )
+            
+            self.results['monitoring'] = monitoring_results
+            
+            estimated_performance = monitoring_results['performance_estimate']['estimate']
+            
+            if monitoring_results['risk_level'] in ['CRITICAL', 'HIGH']:
+                print(f"⚠ 시스템 위험 감지: {monitoring_results['risk_level']}")
+                print(f"실제 성능 예상: {estimated_performance:.4f}")
+            
+            return True, monitor, monitoring_results
+            
+        except Exception as e:
+            print(f"모니터링 오류: {e}")
+            return False, None, None
         """성과 보고서"""
         total_time = time.time() - self.start_time if self.start_time else 0
         print(f"\n=== 시스템 실행 완료 (소요시간: {total_time:.1f}초) ===")
@@ -340,6 +366,10 @@ class AISystem:
             success, trainer = self.step5_model_training(X_train, X_val, y_train, y_val, engineer, preprocessor)
             if not success:
                 print("모델 학습 실패, 계속 진행...")
+            
+            success_monitoring, monitor, monitoring_results = self.step7_monitoring(train_df, test_df, X_train, y_train, self.results.get('validation', {}))
+            if not success_monitoring:
+                print("모니터링 실패, 계속 진행...")
             
             success, submission_df = self.step6_prediction()
             if not success:

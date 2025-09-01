@@ -100,15 +100,36 @@ class DataAnalyzer:
         
         feature_cols = [col for col in self.train_df.columns if col not in ['ID', 'support_needs']]
         
-        for col in feature_cols:
-            if col != 'after_interaction' and self.train_df[col].dtype in [np.number]:
-                train_variance = self.train_df[col].var()
-                if train_variance < 0.001:
-                    leakage_features[col] = {
-                        'should_remove': True,
-                        'variance': train_variance,
-                        'reason': 'low_variance'
-                    }
+        if 'support_needs' in self.train_df.columns:
+            target = self.train_df['support_needs']
+            
+            for col in feature_cols:
+                if col != 'after_interaction' and col in self.train_df.columns:
+                    if self.train_df[col].dtype in [np.number]:
+                        correlation = abs(self.train_df[col].corr(target))
+                        
+                        if correlation > 0.95:
+                            leakage_features[col] = {
+                                'should_remove': True,
+                                'correlation': correlation,
+                                'reason': 'high_correlation_leakage'
+                            }
+                        
+                        variance = self.train_df[col].var()
+                        if variance < 0.001:
+                            leakage_features[col] = {
+                                'should_remove': True,
+                                'variance': variance,
+                                'reason': 'quasi_constant'
+                            }
+                    
+                    unique_ratio = self.train_df[col].nunique() / len(self.train_df)
+                    if unique_ratio > 0.95:
+                        leakage_features[col] = {
+                            'should_remove': True,
+                            'unique_ratio': unique_ratio,
+                            'reason': 'high_cardinality_leak'
+                        }
         
         return leakage_features
     

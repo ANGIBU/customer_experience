@@ -110,34 +110,41 @@ class ValidationSystem:
         
         if 'temporal_id' in X.columns:
             temporal_ids = X['temporal_id'].values
-            sorted_indices = np.argsort(temporal_ids)
+            unique_ids = np.unique(temporal_ids)
+            sorted_unique_ids = np.sort(unique_ids)
             
-            total_samples = len(sorted_indices)
-            gap_size = int(total_samples * self.gap_ratio)
+            total_unique_ids = len(sorted_unique_ids)
+            gap_size = int(total_unique_ids * self.gap_ratio)
             
-            min_fold_size = total_samples // (n_splits * 3)
-            if min_fold_size < 3000:
+            min_fold_ids = total_unique_ids // (n_splits * 4)
+            if min_fold_ids < 200:
                 return self.standard_cv(X, y, n_splits)
             
             fold_scores = []
             temporal_col_idx = list(X.columns).index('temporal_id')
             
             for fold in range(n_splits):
-                window_size = min_fold_size + (fold * min_fold_size // 2)
+                window_size = min_fold_ids + (fold * min_fold_ids // 3)
                 
-                train_start = fold * min_fold_size
+                train_start = fold * min_fold_ids
                 train_end = train_start + window_size
                 
                 val_start = train_end + gap_size
-                val_end = val_start + min_fold_size
+                val_end = val_start + min_fold_ids
                 
-                if val_end > total_samples:
+                if val_end > total_unique_ids:
                     break
                 
-                train_idx = sorted_indices[train_start:train_end]
-                val_idx = sorted_indices[val_start:val_end]
+                train_unique_ids = sorted_unique_ids[train_start:train_end]
+                val_unique_ids = sorted_unique_ids[val_start:val_end]
                 
-                if len(train_idx) < 2000 or len(val_idx) < 800:
+                train_mask = np.isin(temporal_ids, train_unique_ids)
+                val_mask = np.isin(temporal_ids, val_unique_ids)
+                
+                train_idx = np.where(train_mask)[0]
+                val_idx = np.where(val_mask)[0]
+                
+                if len(train_idx) < 3000 or len(val_idx) < 800:
                     continue
                 
                 X_train_fold = np.delete(X_clean[train_idx], temporal_col_idx, axis=1)

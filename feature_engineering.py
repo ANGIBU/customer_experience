@@ -129,32 +129,43 @@ class FeatureEngineer:
         
         for col in categorical_cols:
             if col in train_df.columns and col in test_df.columns:
-                train_encoded = np.zeros(len(train_df))
+                train_encoded = np.full(len(train_df), np.nan)
+                
+                global_mean = train_df['support_needs'].mean()
                 
                 for train_idx, val_idx in skf.split(train_df, train_df['support_needs']):
                     fold_train = train_df.iloc[train_idx]
                     fold_val = train_df.iloc[val_idx]
                     
-                    target_mean = fold_train.groupby(col)['support_needs'].mean()
-                    global_mean = fold_train['support_needs'].mean()
+                    category_stats = fold_train.groupby(col)['support_needs'].agg(['mean', 'count'])
                     
-                    category_counts = fold_train.groupby(col)['support_needs'].count()
-                    smoothing_factor = 5.0
+                    smoothing_factor = 10.0
                     
-                    smoothed_mean = (target_mean * category_counts + global_mean * smoothing_factor) / (category_counts + smoothing_factor)
-                    
-                    encoded_vals = fold_val[col].map(smoothed_mean).fillna(global_mean)
-                    train_encoded[val_idx] = encoded_vals
+                    for category in category_stats.index:
+                        mean_val = category_stats.loc[category, 'mean']
+                        count_val = category_stats.loc[category, 'count']
+                        
+                        smoothed_mean = (mean_val * count_val + global_mean * smoothing_factor) / (count_val + smoothing_factor)
+                        
+                        mask = fold_val[col] == category
+                        train_encoded[fold_val.index[mask]] = smoothed_mean
                 
+                train_encoded = np.where(np.isnan(train_encoded), global_mean, train_encoded)
                 train_new[f'{col}_target_encoded'] = train_encoded
                 
-                target_mean_all = train_df.groupby(col)['support_needs'].mean()
-                global_mean_all = train_df['support_needs'].mean()
-                category_counts_all = train_df.groupby(col)['support_needs'].count()
+                category_stats_all = train_df.groupby(col)['support_needs'].agg(['mean', 'count'])
                 
-                smoothed_mean_all = (target_mean_all * category_counts_all + global_mean_all * smoothing_factor) / (category_counts_all + smoothing_factor)
+                test_encoded = np.full(len(test_df), global_mean)
+                for category in category_stats_all.index:
+                    if category in test_df[col].values:
+                        mean_val = category_stats_all.loc[category, 'mean']
+                        count_val = category_stats_all.loc[category, 'count']
+                        
+                        smoothed_mean = (mean_val * count_val + global_mean * smoothing_factor) / (count_val + smoothing_factor)
+                        
+                        mask = test_df[col] == category
+                        test_encoded[mask] = smoothed_mean
                 
-                test_encoded = test_df[col].map(smoothed_mean_all).fillna(global_mean_all)
                 test_new[f'{col}_target_encoded'] = test_encoded
                 
                 train_new = train_new.drop(col, axis=1)
