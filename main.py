@@ -308,6 +308,8 @@ class AISystem:
         except Exception as e:
             print(f"모니터링 오류: {e}")
             return False, None, None
+    
+    def generate_report(self):
         """성과 보고서"""
         total_time = time.time() - self.start_time if self.start_time else 0
         print(f"\n=== 시스템 실행 완료 (소요시간: {total_time:.1f}초) ===")
