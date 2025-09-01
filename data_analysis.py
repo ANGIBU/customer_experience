@@ -68,19 +68,31 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            overlap_threshold = int(np.percentile(train_id_nums, 85))
+            # 시간적 분할점을 70%로 설정
+            overlap_threshold = int(np.percentile(train_id_nums, 70))
             
             self.temporal_threshold = overlap_threshold
             
             safe_indices = [i for i, tid in enumerate(train_id_nums) if tid <= overlap_threshold]
             safe_ratio = len(safe_indices) / len(train_id_nums)
             
+            # 실제 시간적 겹침 확인
+            train_max = max(train_id_nums)
+            test_min = min(test_id_nums)
+            
+            temporal_gap = test_min - train_max if train_max < test_min else 0
+            overlap_samples = len([x for x in train_id_nums if x >= test_min])
+            overlap_ratio = overlap_samples / len(train_id_nums)
+            
             return {
                 'train_range': train_range,
                 'test_range': test_range,
                 'temporal_threshold': self.temporal_threshold,
                 'safe_ratio': safe_ratio,
-                'safe_indices': safe_indices
+                'safe_indices': safe_indices,
+                'temporal_gap': temporal_gap,
+                'overlap_ratio': overlap_ratio,
+                'has_temporal_leak': overlap_ratio > 0.01
             }
             
         return {}
@@ -89,47 +101,54 @@ class DataAnalyzer:
         """데이터 누수 탐지"""
         leakage_features = {}
         
-        if 'after_interaction' in self.train_df.columns and 'support_needs' in self.train_df.columns:
-            correlation = self.train_df['after_interaction'].corr(self.train_df['support_needs'])
-            
+        # after_interaction은 반드시 제거해야 하는 누수 피처
+        if 'after_interaction' in self.train_df.columns:
             leakage_features['after_interaction'] = {
                 'should_remove': True,
-                'correlation': correlation,
-                'reason': 'temporal_leakage_confirmed'
+                'reason': 'future_information_leak',
+                'risk_level': 'CRITICAL'
             }
         
-        feature_cols = [col for col in self.train_df.columns if col not in ['ID', 'support_needs']]
+        if 'support_needs' not in self.train_df.columns:
+            return leakage_features
         
-        if 'support_needs' in self.train_df.columns:
-            target = self.train_df['support_needs']
-            
-            for col in feature_cols:
-                if col != 'after_interaction' and col in self.train_df.columns:
-                    if self.train_df[col].dtype in [np.number]:
-                        correlation = abs(self.train_df[col].corr(target))
-                        
-                        if correlation > 0.95:
-                            leakage_features[col] = {
-                                'should_remove': True,
-                                'correlation': correlation,
-                                'reason': 'high_correlation_leakage'
-                            }
-                        
-                        variance = self.train_df[col].var()
-                        if variance < 0.001:
-                            leakage_features[col] = {
-                                'should_remove': True,
-                                'variance': variance,
-                                'reason': 'quasi_constant'
-                            }
+        feature_cols = [col for col in self.train_df.columns 
+                       if col not in ['ID', 'support_needs', 'after_interaction']]
+        
+        target = self.train_df['support_needs']
+        
+        for col in feature_cols:
+            if col in self.train_df.columns:
+                if self.train_df[col].dtype in [np.number]:
+                    correlation = abs(self.train_df[col].corr(target))
                     
-                    unique_ratio = self.train_df[col].nunique() / len(self.train_df)
-                    if unique_ratio > 0.95:
+                    if correlation > 0.90:
                         leakage_features[col] = {
                             'should_remove': True,
-                            'unique_ratio': unique_ratio,
-                            'reason': 'high_cardinality_leak'
+                            'correlation': correlation,
+                            'reason': 'high_correlation_leak',
+                            'risk_level': 'CRITICAL'
                         }
+                    
+                    # 거의 상수인 피처 탐지
+                    variance = self.train_df[col].var()
+                    if variance < 0.001:
+                        leakage_features[col] = {
+                            'should_remove': True,
+                            'variance': variance,
+                            'reason': 'quasi_constant',
+                            'risk_level': 'HIGH'
+                        }
+                
+                # 고유값 비율이 너무 높은 경우
+                unique_ratio = self.train_df[col].nunique() / len(self.train_df)
+                if unique_ratio > 0.95:
+                    leakage_features[col] = {
+                        'should_remove': True,
+                        'unique_ratio': unique_ratio,
+                        'reason': 'high_cardinality_leak',
+                        'risk_level': 'HIGH'
+                    }
         
         return leakage_features
     
@@ -151,7 +170,7 @@ class DataAnalyzer:
                         'ks_statistic': ks_stat,
                         'ks_p_value': ks_p,
                         'psi_score': psi_score,
-                        'is_stable': ks_stat < 0.05 and psi_score < 0.2
+                        'is_stable': ks_stat < 0.1 and psi_score < 0.2
                     }
         
         return stability_results
@@ -177,7 +196,7 @@ class DataAnalyzer:
             
             psi = np.sum((test_pct - train_pct) * np.log(test_pct / train_pct))
             
-            return psi
+            return abs(psi)
             
         except Exception:
             return 0.0
@@ -215,7 +234,7 @@ class DataAnalyzer:
                         'test_distribution': test_dist.to_dict(),
                         'chi2_statistic': chi2_stat,
                         'chi2_p_value': chi2_p,
-                        'is_stable': chi2_p > 0.05
+                        'is_stable': chi2_p > 0.01
                     }
         
         return categorical_analysis
@@ -225,6 +244,7 @@ class DataAnalyzer:
         if 'support_needs' not in self.train_df.columns:
             return {}
         
+        # after_interaction 제외한 기본 피처만 사용
         numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         available_numeric = [f for f in numeric_features if f in self.train_df.columns]
         
@@ -243,14 +263,17 @@ class DataAnalyzer:
         X = train_encoded[available_numeric].fillna(0)
         y = train_encoded['support_needs']
         
-        mi_scores = mutual_info_classif(X, y, random_state=42)
-        importance_dict = dict(zip(available_numeric, mi_scores))
-        
-        max_score = max(importance_dict.values()) if importance_dict else 1
-        if max_score > 0:
-            importance_dict = {k: v/max_score for k, v in importance_dict.items()}
-        
-        return importance_dict
+        try:
+            mi_scores = mutual_info_classif(X, y, random_state=42)
+            importance_dict = dict(zip(available_numeric, mi_scores))
+            
+            max_score = max(importance_dict.values()) if importance_dict else 1
+            if max_score > 0:
+                importance_dict = {k: v/max_score for k, v in importance_dict.items()}
+            
+            return importance_dict
+        except:
+            return {}
     
     def validate_data_integrity(self):
         """데이터 무결성 검증"""
@@ -282,8 +305,9 @@ class DataAnalyzer:
     
     def analyze_correlation_matrix(self):
         """상관관계 분석"""
-        numeric_cols = self.train_df.select_dtypes(include=[np.number]).columns
-        numeric_cols = [col for col in numeric_cols if col != 'support_needs']
+        # after_interaction 제외
+        numeric_cols = [col for col in self.train_df.select_dtypes(include=[np.number]).columns 
+                       if col not in ['support_needs', 'after_interaction']]
         
         if len(numeric_cols) < 2:
             return {}
@@ -313,7 +337,6 @@ class DataAnalyzer:
         if train_data is None or test_data is None:
             return {}
         
-        # 데이터 무결성 검증을 제일 먼저 실행하고, 빈 DataFrame 문제를 해결
         if self.train_df.empty or self.test_df.empty:
             return {}
         
