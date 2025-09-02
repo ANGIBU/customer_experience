@@ -24,18 +24,25 @@ class DataPreprocessor:
         df_clean = df.copy()
         
         categorical_cols = ['gender', 'subscription_type']
+        
         for col in categorical_cols:
             if col in df_clean.columns:
                 df_clean[col] = df_clean[col].astype(str).fillna('Unknown')
         
+        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'after_interaction']
+        
         for col in df_clean.columns:
-            if col not in categorical_cols and col not in ['ID']:
+            if col in categorical_cols or col == 'ID':
+                continue
+            elif col in numeric_cols or any(keyword in col for keyword in ['score', 'ratio', 'product', 'log', 'sqrt', 'squared', 'encoded', 'cluster', 'dist']):
                 try:
                     df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
                     df_clean[col] = df_clean[col].replace([np.inf, -np.inf], np.nan)
                     df_clean[col] = df_clean[col].fillna(df_clean[col].median())
                 except:
-                    df_clean[col] = df_clean[col].astype(str).fillna('Unknown')
+                    df_clean[col] = 0
+            else:
+                df_clean[col] = df_clean[col].astype(str).fillna('Unknown')
         
         return df_clean
         
@@ -75,19 +82,43 @@ class DataPreprocessor:
     
     def handle_missing_values(self, train_df, test_df):
         """결측치 처리"""
-        train_clean = self.safe_data_conversion(train_df)
-        test_clean = self.safe_data_conversion(test_df)
+        train_clean = train_df.copy()
+        test_clean = test_df.copy()
         
-        numeric_cols = []
+        categorical_cols = ['gender', 'subscription_type']
+        for col in categorical_cols:
+            if col in train_clean.columns:
+                train_clean[col] = train_clean[col].astype(str).fillna('Unknown')
+            if col in test_clean.columns:
+                test_clean[col] = test_clean[col].astype(str).fillna('Unknown')
+        
+        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'after_interaction']
+        
         for col in train_clean.columns:
-            if col not in ['ID', 'gender', 'subscription_type', 'support_needs']:
-                try:
-                    pd.to_numeric(train_clean[col], errors='raise')
-                    numeric_cols.append(col)
-                except:
-                    continue
+            if col not in categorical_cols and col != 'ID' and col != 'support_needs':
+                if col in numeric_cols or any(keyword in col for keyword in ['score', 'ratio', 'product', 'log', 'sqrt', 'squared', 'encoded', 'cluster', 'dist', 'group', 'normalized']):
+                    try:
+                        train_clean[col] = pd.to_numeric(train_clean[col], errors='coerce')
+                        train_clean[col] = train_clean[col].fillna(train_clean[col].median())
+                        train_clean[col] = train_clean[col].replace([np.inf, -np.inf], 0)
+                    except:
+                        train_clean[col] = 0
         
-        common_numeric = [col for col in numeric_cols if col in train_clean.columns and col in test_clean.columns]
+        for col in test_clean.columns:
+            if col not in categorical_cols and col != 'ID':
+                if col in numeric_cols or any(keyword in col for keyword in ['score', 'ratio', 'product', 'log', 'sqrt', 'squared', 'encoded', 'cluster', 'dist', 'group', 'normalized']):
+                    try:
+                        test_clean[col] = pd.to_numeric(test_clean[col], errors='coerce')
+                        test_clean[col] = test_clean[col].fillna(test_clean[col].median())
+                        test_clean[col] = test_clean[col].replace([np.inf, -np.inf], 0)
+                    except:
+                        test_clean[col] = 0
+        
+        common_numeric = []
+        for col in train_clean.columns:
+            if col in test_clean.columns and col not in categorical_cols and col not in ['ID', 'support_needs']:
+                if train_clean[col].dtype in [np.number] and test_clean[col].dtype in [np.number]:
+                    common_numeric.append(col)
         
         if common_numeric:
             try:
@@ -108,7 +139,6 @@ class DataPreprocessor:
                     train_clean[col] = train_clean[col].fillna(median_val)
                     test_clean[col] = test_clean[col].fillna(median_val)
         
-        categorical_cols = ['gender', 'subscription_type']
         for col in categorical_cols:
             if col in train_clean.columns and col in test_clean.columns:
                 try:
@@ -179,13 +209,18 @@ class DataPreprocessor:
     
     def apply_scaling(self, train_df, test_df):
         """스케일링 적용"""
-        train_clean = self.safe_data_conversion(train_df)
-        test_clean = self.safe_data_conversion(test_df)
+        train_clean = train_df.copy()
+        test_clean = test_df.copy()
         
-        numeric_cols = [col for col in train_clean.select_dtypes(include=[np.number]).columns 
-                        if col not in ['ID', 'support_needs']]
+        categorical_cols = ['gender', 'subscription_type']
         
-        common_numeric = [col for col in numeric_cols if col in test_clean.columns]
+        numeric_cols = []
+        for col in train_clean.columns:
+            if col not in categorical_cols and col not in ['ID', 'support_needs']:
+                if train_clean[col].dtype in [np.number]:
+                    numeric_cols.append(col)
+        
+        common_numeric = [col for col in numeric_cols if col in test_clean.columns and test_clean[col].dtype in [np.number]]
         
         if not common_numeric:
             return train_clean, test_clean
@@ -338,12 +373,12 @@ class DataPreprocessor:
                 if col in safe_train.columns:
                     if col in common_features:
                         if col == 'gender':
-                            le_mapping = {'M': 0, 'F': 1, 'Unknown': 2}
-                            safe_train[col] = safe_train[col].map(le_mapping).fillna(2)
+                            le_mapping = {'M': 0, 'F': 1, 'Male': 0, 'Female': 1, 'Unknown': 2}
+                            safe_train[col] = safe_train[col].astype(str).map(le_mapping).fillna(2)
                         else:
-                            unique_vals = safe_train[col].unique()
+                            unique_vals = safe_train[col].astype(str).unique()
                             mapping = {val: i for i, val in enumerate(unique_vals)}
-                            safe_train[col] = safe_train[col].map(mapping).fillna(0)
+                            safe_train[col] = safe_train[col].astype(str).map(mapping).fillna(0)
             
             try:
                 temporal_ids = []

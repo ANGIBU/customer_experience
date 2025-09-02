@@ -26,13 +26,20 @@ class FeatureEngineer:
             if col in df_clean.columns:
                 df_clean[col] = df_clean[col].astype(str).fillna('Unknown')
         
-        numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
+        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'after_interaction']
         
-        for col in numeric_cols:
-            if col in df_clean.columns:
-                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
-                df_clean[col] = df_clean[col].fillna(df_clean[col].median())
-                df_clean[col] = df_clean[col].replace([np.inf, -np.inf], 0)
+        for col in df_clean.columns:
+            if col in categorical_cols or col == 'ID':
+                continue
+            elif col in numeric_cols or any(keyword in col for keyword in ['score', 'ratio', 'product', 'log', 'sqrt', 'squared', 'encoded', 'cluster', 'dist', 'group', 'normalized']):
+                try:
+                    df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+                    df_clean[col] = df_clean[col].fillna(df_clean[col].median())
+                    df_clean[col] = df_clean[col].replace([np.inf, -np.inf], 0)
+                except:
+                    df_clean[col] = 0
+            else:
+                df_clean[col] = df_clean[col].astype(str).fillna('Unknown')
         
         return df_clean
         
@@ -151,6 +158,12 @@ class FeatureEngineer:
         train_new = train_df.copy()
         test_new = test_df.copy()
         
+        for col in categorical_cols:
+            if col in train_new.columns:
+                train_new[col] = train_new[col].astype(str).fillna('Unknown')
+            if col in test_new.columns:
+                test_new[col] = test_new[col].astype(str).fillna('Unknown')
+        
         skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         
         for col in categorical_cols:
@@ -173,7 +186,7 @@ class FeatureEngineer:
                         
                         smoothed_mean = (mean_val * count_val + global_mean * smoothing_factor) / (count_val + smoothing_factor)
                         
-                        mask = fold_val[col] == category
+                        mask = fold_val[col].astype(str) == str(category)
                         train_encoded[fold_val.index[mask]] = smoothed_mean
                 
                 train_encoded = np.where(np.isnan(train_encoded), global_mean, train_encoded)
@@ -185,7 +198,7 @@ class FeatureEngineer:
                 
                 test_encoded = np.full(len(test_df), global_mean)
                 for category in category_stats_all.index:
-                    if category in test_df[col].values:
+                    if str(category) in test_df[col].astype(str).values:
                         mean_val = category_stats_all.loc[category, 'mean']
                         count_val = category_stats_all.loc[category, 'count']
                         
@@ -193,13 +206,13 @@ class FeatureEngineer:
                         smoothed_mean = (mean_val * count_val + global_mean * smoothing_factor) / (count_val + smoothing_factor)
                         smoothed_mean = 0.85 * smoothed_mean + 0.15 * global_mean
                         
-                        mask = test_df[col] == category
+                        mask = test_df[col].astype(str) == str(category)
                         test_encoded[mask] = smoothed_mean
                 
                 test_new[f'{col}_encoded'] = test_encoded
                 
-                train_new[col] = train_df[col]
-                test_new[col] = test_df[col]
+                train_new[col] = train_df[col].astype(str)
+                test_new[col] = test_df[col].astype(str)
         
         return train_new, test_new
     
