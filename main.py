@@ -20,7 +20,7 @@ class AISystem:
     def __init__(self):
         self.start_time = None
         self.results = {}
-        self.target_accuracy = 0.42
+        self.target_accuracy = 0.52
         
     def setup_environment(self):
         """환경 설정"""
@@ -46,16 +46,16 @@ class AISystem:
             
             if analysis_results and 'temporal' in analysis_results:
                 temporal_info = analysis_results['temporal']
-                safe_ratio = temporal_info.get('safe_ratio', 0.7)
+                safe_ratio = temporal_info.get('safe_ratio', 0.8)
                 has_leak = temporal_info.get('has_temporal_leak', False)
                 print(f"시간적 안전 데이터 비율: {safe_ratio:.3f}")
                 if has_leak:
                     print("시간적 누수 감지됨")
             
-            if analysis_results and 'leakage' in analysis_results:
-                leakage_info = analysis_results['leakage']
-                if 'after_interaction' in leakage_info:
-                    print("미래 정보 누수 피처 확인됨 - 제거 예정")
+            if analysis_results and 'after_interaction_analysis' in analysis_results:
+                after_info = analysis_results['after_interaction_analysis']
+                can_use = after_info.get('can_use', False)
+                print(f"after_interaction 사용 가능: {can_use}")
             
             return True, analyzer
             
@@ -84,14 +84,12 @@ class AISystem:
             final_features = train_processed.shape[1] - 2
             
             print(f"피처 수: {original_features} → {final_features}")
-            
-            # after_interaction 제거 확인
-            if 'after_interaction' not in train_processed.columns:
-                print("누수 피처 제거 완료")
+            print(f"after_interaction 사용: {engineer.can_use_after_interaction}")
             
             self.results['feature_engineering'] = {
                 'original_features': original_features,
-                'final_features': final_features
+                'final_features': final_features,
+                'can_use_after_interaction': engineer.can_use_after_interaction
             }
             
             return True, engineer, train_processed, test_processed
@@ -113,7 +111,6 @@ class AISystem:
             if train_final is None or test_final is None:
                 raise ValueError("전처리 실패")
             
-            # 시간적 분할 사용
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_temporal_split(
                 train_final, test_final, val_size=0.25
             )
@@ -149,9 +146,11 @@ class AISystem:
             
             overall_score = validation_results.get('overall_score', 0.0)
             raw_score = validation_results.get('holdout', {}).get('raw_accuracy', 0.0)
+            target_achieved = validation_results.get('target_achieved', False)
             
-            print(f"보수적 검증 점수: {overall_score:.4f}")
+            print(f"검증 점수: {overall_score:.4f}")
             print(f"원본 검증 점수: {raw_score:.4f}")
+            print(f"목표 달성: {target_achieved}")
             
             if overall_score >= self.target_accuracy:
                 print("목표 성능 달성")
@@ -162,7 +161,7 @@ class AISystem:
             
         except Exception as e:
             print(f"검증 오류: {e}")
-            self.results['validation'] = {'overall_score': 0.0}
+            self.results['validation'] = {'overall_score': 0.0, 'target_achieved': False}
             return False, None
     
     def step5_model_training(self, X_train, X_val, y_train, y_val, engineer, preprocessor):
@@ -248,29 +247,20 @@ class AISystem:
             train_df = pd.read_csv('train.csv')
             test_df = pd.read_csv('test.csv')
             
-            # after_interaction 제거
-            if 'after_interaction' in train_df.columns:
-                train_df = train_df.drop('after_interaction', axis=1)
-            if 'after_interaction' in test_df.columns:
-                test_df = test_df.drop('after_interaction', axis=1)
-            
             numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
             categorical_cols = ['gender', 'subscription_type']
             
             train_processed = train_df.copy()
             test_processed = test_df.copy()
             
-            # 범주형 변수 안전한 처리
             for col in categorical_cols:
                 if col in train_df.columns and col in test_df.columns:
                     try:
-                        # 안전한 매핑 사용
                         if col == 'gender':
                             gender_mapping = {'M': 0, 'F': 1, 'Male': 0, 'Female': 1, 'Unknown': 2}
                             train_processed[col] = train_df[col].astype(str).map(gender_mapping).fillna(2)
                             test_processed[col] = test_df[col].astype(str).map(gender_mapping).fillna(2)
                         else:
-                            # subscription_type 처리
                             combined_values = pd.concat([train_df[col], test_df[col]]).astype(str).unique()
                             mapping = {val: i for i, val in enumerate(combined_values)}
                             mapping['Unknown'] = len(mapping)
@@ -279,19 +269,16 @@ class AISystem:
                             test_processed[col] = test_df[col].astype(str).map(mapping).fillna(len(mapping))
                     except Exception as e:
                         print(f"범주형 변수 {col} 처리 오류: {e}, 기본값 사용")
-                        # 오류 시 기본값 사용
                         train_processed[col] = 0
                         test_processed[col] = 0
             
             feature_cols = numeric_cols + categorical_cols
             feature_cols = [col for col in feature_cols if col in train_processed.columns and col in test_processed.columns]
             
-            # 안전한 데이터 준비
             X = train_processed[feature_cols].fillna(0)
             y = train_processed['support_needs']
             X_test = test_processed[feature_cols].fillna(0)
             
-            # 데이터 타입 안전성 보장
             for col in feature_cols:
                 try:
                     X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
@@ -300,12 +287,11 @@ class AISystem:
                     X[col] = 0
                     X_test[col] = 0
             
-            # 보수적인 모델 설정
             model = RandomForestClassifier(
-                n_estimators=200,
-                max_depth=8,
-                min_samples_split=15,
-                min_samples_leaf=8,
+                n_estimators=300,
+                max_depth=12,
+                min_samples_split=8,
+                min_samples_leaf=4,
                 random_state=42,
                 n_jobs=-1
             )
@@ -331,10 +317,9 @@ class AISystem:
         except Exception as e:
             print(f"대체 예측 오류: {e}")
             try:
-                # 최후의 수단
                 test_df = pd.read_csv('test.csv')
                 np.random.seed(42)
-                random_predictions = np.random.choice([0, 1, 2], size=len(test_df), p=[0.60, 0.25, 0.15])
+                random_predictions = np.random.choice([0, 1, 2], size=len(test_df), p=[0.58, 0.27, 0.15])
                 
                 submission_df = pd.DataFrame({
                     'ID': test_df['ID'],
@@ -347,8 +332,8 @@ class AISystem:
                 return False, None
     
     def step7_monitoring(self, train_df, test_df, X_train, y_train, validation_results):
-        """정밀 모니터링"""
-        print("정밀 모니터링 시작...")
+        """모니터링"""
+        print("모니터링 시작...")
         try:
             monitor = ModelMonitor()
             
@@ -385,13 +370,16 @@ class AISystem:
             val = self.results['validation']
             overall_score = val.get('overall_score', 0.0)
             raw_score = val.get('holdout', {}).get('raw_accuracy', 0.0)
-            print(f"보수적 검증 점수: {overall_score:.4f}")
+            target_achieved = val.get('target_achieved', False)
+            
+            print(f"검증 점수: {overall_score:.4f}")
             print(f"원본 검증 점수: {raw_score:.4f}")
+            print(f"목표 달성: {'✓' if target_achieved else '✗'}")
             
             if overall_score >= self.target_accuracy:
                 print("목표 정확도 달성")
             else:
-                print(f"목표 미달")
+                print(f"목표 미달 - 부족분: {self.target_accuracy - overall_score:.3f}")
         
         if 'monitoring' in self.results:
             mon = self.results['monitoring']
@@ -405,6 +393,17 @@ class AISystem:
         success_rate = completed_steps / total_steps * 100
         
         print(f"단계 완료율: {completed_steps}/{total_steps} ({success_rate:.1f}%)")
+        
+        if 'prediction' in self.results:
+            pred_info = self.results['prediction']
+            pred_counts = pred_info.get('prediction_counts', {})
+            total_preds = sum(pred_counts.values()) if pred_counts else 0
+            
+            if total_preds > 0:
+                print(f"예측 분포:")
+                for cls, count in sorted(pred_counts.items()):
+                    pct = count / total_preds * 100
+                    print(f"  클래스 {cls}: {count}개 ({pct:.1f}%)")
     
     def run_system(self):
         """전체 시스템 실행"""

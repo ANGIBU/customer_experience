@@ -64,7 +64,7 @@ class PredictionSystem:
             if os.path.exists('models/feature_info.pkl'):
                 self.feature_info = joblib.load('models/feature_info.pkl')
                 self.feature_names = self.feature_info.get('feature_names', [])
-                self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 1.05, 2: 1.03})
+                self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 1.02, 2: 1.01})
                 self.ensemble_weights = self.feature_info.get('ensemble_weights', {})
             
             model_configs = [
@@ -74,7 +74,8 @@ class PredictionSystem:
                 ('random_forest', 'models/random_forest_model.pkl', 'pkl'),
                 ('extra_trees', 'models/extra_trees_model.pkl', 'pkl'),
                 ('logistic_regression', 'models/logistic_regression_model.pkl', 'pkl'),
-                ('gradient_boosting', 'models/gradient_boosting_model.pkl', 'pkl')
+                ('gradient_boosting', 'models/gradient_boosting_model.pkl', 'pkl'),
+                ('svm', 'models/svm_model.pkl', 'pkl')
             ]
             
             loaded_count = 0
@@ -217,7 +218,7 @@ class PredictionSystem:
                 if model_name in self.ensemble_weights:
                     weights[model_name] = self.ensemble_weights[model_name]
                 else:
-                    weights[model_name] = 0.05
+                    weights[model_name] = 0.02
                 total_weight += weights[model_name]
             
             if total_weight > 0:
@@ -226,15 +227,15 @@ class PredictionSystem:
             
             return weights
         
-        # 보수적인 기본 가중치
         default_weights = {
             'lightgbm': 0.25,
             'xgboost': 0.22,
             'catboost': 0.20,
             'random_forest': 0.15,
             'extra_trees': 0.10,
-            'logistic_regression': 0.05,
-            'gradient_boosting': 0.03
+            'gradient_boosting': 0.05,
+            'logistic_regression': 0.02,
+            'svm': 0.01
         }
         
         available_models = list(predictions.keys())
@@ -245,7 +246,7 @@ class PredictionSystem:
             if model_name in default_weights:
                 weights[model_name] = default_weights[model_name]
             else:
-                weights[model_name] = 0.02
+                weights[model_name] = 0.01
             total_weight += weights[model_name]
         
         if total_weight > 0:
@@ -271,18 +272,16 @@ class PredictionSystem:
                 weight = weights[model_name]
                 ensemble_proba += weight * pred
         
-        # 정규화
         row_sums = ensemble_proba.sum(axis=1, keepdims=True)
         ensemble_proba = np.where(row_sums > 0, ensemble_proba / row_sums, 
                                  np.array([0.33, 0.34, 0.33])[np.newaxis, :])
         
         return ensemble_proba
     
-    def apply_conservative_calibration(self, pred_proba):
-        """보수적 확률 보정"""
+    def apply_calibration(self, pred_proba):
+        """확률 보정"""
         try:
-            # 온도 스케일링 (더 보수적)
-            temperature = 1.10
+            temperature = 1.05
             log_proba = np.log(np.clip(pred_proba, 1e-8, 1-1e-8))
             scaled_log_proba = log_proba / temperature
             calibrated_proba = softmax(scaled_log_proba, axis=1)
@@ -294,7 +293,6 @@ class PredictionSystem:
     
     def apply_class_balance_adjustment(self, pred_proba):
         """클래스 균형 조정"""
-        # 보수적인 조정
         class_adjustments = np.array([1.00, 1.01, 1.005])
         
         adjusted_proba = pred_proba * class_adjustments[np.newaxis, :]
@@ -309,22 +307,19 @@ class PredictionSystem:
         pred_counts = np.bincount(predictions, minlength=3)
         total_preds = len(predictions)
         
-        # 클래스 0이 너무 많은 경우 조정
-        if pred_counts[0] > total_preds * 0.75:
-            # 가장 확신도가 낮은 클래스 0 예측 중 일부를 클래스 1로 변경
+        if pred_counts[0] > total_preds * 0.80:
             class_0_mask = predictions == 0
             class_0_indices = np.where(class_0_mask)[0]
             
             if len(class_0_indices) > 0:
-                # 10% 정도를 클래스 1로 변경
-                change_count = int(len(class_0_indices) * 0.10)
+                change_count = int(len(class_0_indices) * 0.08)
                 if change_count > 0:
                     change_indices = np.random.choice(class_0_indices, change_count, replace=False)
                     predictions[change_indices] = 1
         
-        # 클래스 1이 너무 적은 경우 조정
-        if pred_counts[1] < total_preds * 0.05:
-            # 클래스 0 중 일부를 클래스 1로 변경
+        pred_counts = np.bincount(predictions, minlength=3)
+        
+        if pred_counts[1] < total_preds * 0.12:
             class_0_mask = predictions == 0
             class_0_indices = np.where(class_0_mask)[0]
             
@@ -334,14 +329,12 @@ class PredictionSystem:
                     change_indices = np.random.choice(class_0_indices, change_count, replace=False)
                     predictions[change_indices] = 1
         
-        # 클래스 2가 너무 적은 경우 조정
-        if pred_counts[2] < total_preds * 0.02:
-            # 클래스 0 중 일부를 클래스 2로 변경
+        if pred_counts[2] < total_preds * 0.08:
             class_0_mask = predictions == 0
             class_0_indices = np.where(class_0_mask)[0]
             
             if len(class_0_indices) > 0:
-                change_count = int(total_preds * 0.02)
+                change_count = int(total_preds * 0.03)
                 if change_count > 0 and change_count <= len(class_0_indices):
                     change_indices = np.random.choice(class_0_indices, change_count, replace=False)
                     predictions[change_indices] = 2
@@ -360,16 +353,12 @@ class PredictionSystem:
         if ensemble_proba is None:
             return self.create_fallback_predictions(X_test, test_ids)
         
-        # 보수적인 확률 보정 적용
-        calibrated_proba = self.apply_conservative_calibration(ensemble_proba)
+        calibrated_proba = self.apply_calibration(ensemble_proba)
         
-        # 클래스 균형 조정
         final_proba = self.apply_class_balance_adjustment(calibrated_proba)
         
-        # 기본 예측
         predictions = np.argmax(final_proba, axis=1)
         
-        # 예측 평활화
         predictions = self.apply_prediction_smoothing(predictions)
         
         submission_df = pd.DataFrame({
@@ -390,19 +379,12 @@ class PredictionSystem:
             train_df = pd.read_csv('train.csv')
             test_df = pd.read_csv('test.csv')
             
-            # after_interaction 제거
-            if 'after_interaction' in train_df.columns:
-                train_df = train_df.drop('after_interaction', axis=1)
-            if 'after_interaction' in test_df.columns:
-                test_df = test_df.drop('after_interaction', axis=1)
-            
             numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
             categorical_cols = ['gender', 'subscription_type']
             
             train_processed = train_df.copy()
             test_processed = test_df.copy()
             
-            # 범주형 변수 인코딩
             le = LabelEncoder()
             for col in categorical_cols:
                 if col in train_df.columns and col in test_df.columns:
@@ -418,7 +400,6 @@ class PredictionSystem:
             y_train = train_processed['support_needs']
             X_test_simple = test_processed[feature_cols].fillna(0)
             
-            # 클래스 가중치 계산
             if self.class_weights:
                 class_weights = self.class_weights
             else:
@@ -432,15 +413,14 @@ class PredictionSystem:
                     else:
                         class_weights[i] = 1.0
                 
-                class_weights[1] *= 1.05
-                class_weights[2] *= 1.03
+                class_weights[1] *= 1.02
+                class_weights[2] *= 1.01
             
-            # 보수적인 모델 파라미터
             model = RandomForestClassifier(
-                n_estimators=200,
-                max_depth=8,
-                min_samples_split=15,
-                min_samples_leaf=8,
+                n_estimators=300,
+                max_depth=12,
+                min_samples_split=8,
+                min_samples_leaf=4,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
@@ -448,17 +428,13 @@ class PredictionSystem:
             
             model.fit(X_train, y_train)
             
-            # 확률 예측
             pred_proba = model.predict_proba(X_test_simple)
             
-            # 보수적인 보정 적용
-            calibrated_proba = self.apply_conservative_calibration(pred_proba)
+            calibrated_proba = self.apply_calibration(pred_proba)
             calibrated_proba = self.apply_class_balance_adjustment(calibrated_proba)
             
-            # 예측 생성
             predictions = np.argmax(calibrated_proba, axis=1)
             
-            # 예측 평활화
             predictions = self.apply_prediction_smoothing(predictions)
             
             submission_df = pd.DataFrame({
@@ -471,17 +447,20 @@ class PredictionSystem:
             return submission_df
             
         except Exception as e:
-            # 최후의 수단: 기본 분포 기반 랜덤 예측
-            np.random.seed(42)
-            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.60, 0.25, 0.15])
-            
-            submission_df = pd.DataFrame({
-                'ID': test_ids,
-                'support_needs': random_predictions
-            })
-            
-            submission_df.to_csv('submission.csv', index=False)
-            return submission_df
+            try:
+                test_df = pd.read_csv('test.csv')
+                np.random.seed(42)
+                random_predictions = np.random.choice([0, 1, 2], size=len(test_df), p=[0.58, 0.27, 0.15])
+                
+                submission_df = pd.DataFrame({
+                    'ID': test_df['ID'],
+                    'support_needs': random_predictions
+                })
+                
+                submission_df.to_csv('submission.csv', index=False)
+                return submission_df
+            except:
+                return None
     
     def validate_submission(self, submission_df):
         """제출 파일 검증"""

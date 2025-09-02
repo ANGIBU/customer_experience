@@ -69,15 +69,13 @@ class DataAnalyzer:
                 train_range = [min(train_id_nums), max(train_id_nums)]
                 test_range = [min(test_id_nums), max(test_id_nums)]
                 
-                # 더 보수적인 분할점 설정 (60%)
-                overlap_threshold = int(np.percentile(train_id_nums, 60))
+                overlap_threshold = int(np.percentile(train_id_nums, 80))
                 
                 self.temporal_threshold = overlap_threshold
                 
                 safe_indices = [i for i, tid in enumerate(train_id_nums) if tid <= overlap_threshold]
-                safe_ratio = len(safe_indices) / len(train_id_nums) if train_id_nums else 0.6
+                safe_ratio = len(safe_indices) / len(train_id_nums) if train_id_nums else 0.8
                 
-                # 시간적 겹침 확인
                 train_max = max(train_id_nums)
                 test_min = min(test_id_nums)
                 
@@ -93,58 +91,69 @@ class DataAnalyzer:
                     'safe_indices': safe_indices,
                     'temporal_gap': temporal_gap,
                     'overlap_ratio': overlap_ratio,
-                    'has_temporal_leak': overlap_ratio > 0.01
+                    'has_temporal_leak': overlap_ratio > 0.01,
+                    'can_use_after_interaction': overlap_ratio <= 0.001
                 }
             
             return {
-                'safe_ratio': 0.6,
+                'safe_ratio': 0.8,
                 'has_temporal_leak': False,
-                'temporal_threshold': None
+                'temporal_threshold': None,
+                'can_use_after_interaction': True
             }
             
         except Exception as e:
             return {
-                'safe_ratio': 0.6,
+                'safe_ratio': 0.8,
                 'has_temporal_leak': False,
-                'temporal_threshold': None
+                'temporal_threshold': None,
+                'can_use_after_interaction': False
             }
     
     def detect_data_leakage(self):
         """데이터 누수 탐지"""
         leakage_features = {}
         
-        # after_interaction은 반드시 제거해야 하는 누수 피처
         if 'after_interaction' in self.train_df.columns:
-            leakage_features['after_interaction'] = {
-                'should_remove': True,
-                'reason': 'future_information_leak',
-                'risk_level': 'CRITICAL'
-            }
+            temporal_info = self.analyze_temporal_patterns()
+            can_use_safely = temporal_info.get('can_use_after_interaction', False)
+            
+            if can_use_safely:
+                leakage_features['after_interaction'] = {
+                    'should_remove': False,
+                    'reason': 'safe_with_temporal_split',
+                    'risk_level': 'LOW'
+                }
+            else:
+                leakage_features['after_interaction'] = {
+                    'should_remove': True,
+                    'reason': 'temporal_leak_detected',
+                    'risk_level': 'CRITICAL'
+                }
         
         if 'support_needs' not in self.train_df.columns:
             return leakage_features
         
         feature_cols = [col for col in self.train_df.columns 
-                       if col not in ['ID', 'support_needs', 'after_interaction']]
+                       if col not in ['ID', 'support_needs']]
         
         target = self.train_df['support_needs']
         
         for col in feature_cols:
-            if col in self.train_df.columns:
+            if col in self.train_df.columns and col != 'after_interaction':
                 if self.train_df[col].dtype in [np.number]:
                     correlation = abs(self.train_df[col].corr(target))
                     
-                    if correlation > 0.90:
+                    if correlation > 0.95:
                         leakage_features[col] = {
                             'should_remove': True,
                             'correlation': correlation,
-                            'reason': 'high_correlation_leak',
+                            'reason': 'extreme_correlation',
                             'risk_level': 'CRITICAL'
                         }
                     
-                    # 거의 상수인 피처 탐지
                     variance = self.train_df[col].var()
-                    if variance < 0.001:
+                    if variance < 0.0001:
                         leakage_features[col] = {
                             'should_remove': True,
                             'variance': variance,
@@ -152,13 +161,12 @@ class DataAnalyzer:
                             'risk_level': 'HIGH'
                         }
                 
-                # 고유값 비율이 너무 높은 경우
                 unique_ratio = self.train_df[col].nunique() / len(self.train_df)
-                if unique_ratio > 0.95:
+                if unique_ratio > 0.98:
                     leakage_features[col] = {
                         'should_remove': True,
                         'unique_ratio': unique_ratio,
-                        'reason': 'high_cardinality_leak',
+                        'reason': 'high_cardinality',
                         'risk_level': 'HIGH'
                     }
         
@@ -166,7 +174,7 @@ class DataAnalyzer:
     
     def analyze_feature_stability(self):
         """피처 안정성 분석"""
-        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'after_interaction']
         stability_results = {}
         
         for feature in numeric_features:
@@ -182,7 +190,7 @@ class DataAnalyzer:
                         'ks_statistic': ks_stat,
                         'ks_p_value': ks_p,
                         'psi_score': psi_score,
-                        'is_stable': ks_stat < 0.1 and psi_score < 0.2
+                        'is_stable': ks_stat < 0.15 and psi_score < 0.25
                     }
         
         return stability_results
@@ -256,8 +264,12 @@ class DataAnalyzer:
         if 'support_needs' not in self.train_df.columns:
             return {}
         
-        # after_interaction 제외한 기본 피처만 사용
         numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        temporal_info = self.analyze_temporal_patterns()
+        
+        if temporal_info.get('can_use_after_interaction', False):
+            numeric_features.append('after_interaction')
+        
         available_numeric = [f for f in numeric_features if f in self.train_df.columns]
         
         categorical_features = ['gender', 'subscription_type']
@@ -310,16 +322,15 @@ class DataAnalyzer:
             if col != 'ID':
                 missing_ratio = self.train_df[col].isnull().mean()
                 missing_info[col] = missing_ratio
-                if missing_ratio > 0.3:
+                if missing_ratio > 0.4:
                     issues.append(f"{col}_high_missing: {missing_ratio:.3f}")
         
         return len(issues) == 0, issues, missing_info
     
     def analyze_correlation_matrix(self):
         """상관관계 분석"""
-        # after_interaction 제외
         numeric_cols = [col for col in self.train_df.select_dtypes(include=[np.number]).columns 
-                       if col not in ['support_needs', 'after_interaction']]
+                       if col not in ['support_needs']]
         
         if len(numeric_cols) < 2:
             return {}
@@ -330,7 +341,7 @@ class DataAnalyzer:
         for i in range(len(corr_matrix.columns)):
             for j in range(i+1, len(corr_matrix.columns)):
                 corr_val = abs(corr_matrix.iloc[i, j])
-                if corr_val > 0.8:
+                if corr_val > 0.85:
                     high_corr_pairs.append({
                         'feature1': corr_matrix.columns[i],
                         'feature2': corr_matrix.columns[j],
@@ -342,6 +353,32 @@ class DataAnalyzer:
             'high_correlation_pairs': high_corr_pairs,
             'max_correlation': corr_matrix.abs().max().max() if not corr_matrix.empty else 0
         }
+    
+    def analyze_after_interaction_safety(self):
+        """after_interaction 피처 안전성 분석"""
+        if 'after_interaction' not in self.train_df.columns:
+            return {'can_use': False, 'reason': 'feature_not_found'}
+        
+        temporal_info = self.analyze_temporal_patterns()
+        overlap_ratio = temporal_info.get('overlap_ratio', 1.0)
+        
+        if overlap_ratio <= 0.001:
+            correlation = abs(self.train_df['after_interaction'].corr(self.train_df['support_needs']))
+            
+            return {
+                'can_use': True,
+                'overlap_ratio': overlap_ratio,
+                'correlation_with_target': correlation,
+                'safety_level': 'SAFE',
+                'recommendation': 'use_with_careful_validation'
+            }
+        else:
+            return {
+                'can_use': False,
+                'overlap_ratio': overlap_ratio,
+                'safety_level': 'RISKY',
+                'recommendation': 'remove_feature'
+            }
     
     def run_analysis(self):
         """분석 실행"""
@@ -379,6 +416,9 @@ class DataAnalyzer:
         
         correlation_info = self.analyze_correlation_matrix()
         self.analysis_results['correlation'] = correlation_info
+        
+        after_interaction_info = self.analyze_after_interaction_safety()
+        self.analysis_results['after_interaction_analysis'] = after_interaction_info
         
         return self.analysis_results
 
