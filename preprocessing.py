@@ -38,11 +38,12 @@ class DataPreprocessor:
                     temporal_ids.append(0)
             
             if temporal_ids and len(temporal_ids) > 100:
-                threshold = np.percentile(temporal_ids, 80)
+                threshold = np.percentile(temporal_ids, 50)
                 safe_indices = [i for i, tid in enumerate(temporal_ids) if tid <= threshold]
                 
-                if len(safe_indices) > len(temporal_ids) * 0.6:
+                if len(safe_indices) > len(temporal_ids) * 0.3:
                     filtered_data = train_df.iloc[safe_indices].copy()
+                    print(f"시간적 필터링: {len(filtered_data)}/{len(train_df)} 샘플 사용")
                 else:
                     filtered_data = train_df.copy()
             else:

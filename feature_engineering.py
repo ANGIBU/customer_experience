@@ -251,46 +251,7 @@ class FeatureEngineer:
     
     def create_clustering_features(self, train_df, test_df):
         """클러스터링 피처 생성"""
-        try:
-            numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
-            if self.can_use_after_interaction and 'after_interaction' in train_df.columns:
-                numeric_cols.append('after_interaction')
-            
-            available_cols = [col for col in numeric_cols if col in train_df.columns and col in test_df.columns]
-            
-            if len(available_cols) < 3:
-                return train_df, test_df
-            
-            train_cluster_data = train_df[available_cols].fillna(0)
-            test_cluster_data = test_df[available_cols].fillna(0)
-            
-            scaler = RobustScaler()
-            train_scaled = scaler.fit_transform(train_cluster_data)
-            test_scaled = scaler.transform(test_cluster_data)
-            
-            self.kmeans_model = KMeans(n_clusters=8, random_state=42, n_init=10)
-            train_clusters = self.kmeans_model.fit_predict(train_scaled)
-            test_clusters = self.kmeans_model.predict(test_scaled)
-            
-            train_df['cluster_id'] = train_clusters
-            test_df['cluster_id'] = test_clusters
-            
-            cluster_centers = self.kmeans_model.cluster_centers_
-            
-            train_distances = []
-            test_distances = []
-            
-            for i, center in enumerate(cluster_centers):
-                train_dist = np.linalg.norm(train_scaled - center, axis=1)
-                test_dist = np.linalg.norm(test_scaled - center, axis=1)
-                
-                train_df[f'dist_cluster_{i}'] = train_dist
-                test_df[f'dist_cluster_{i}'] = test_dist
-            
-            return train_df, test_df
-            
-        except Exception as e:
-            return train_df, test_df
+        return train_df, test_df
     
     def create_polynomial_features(self, df):
         """다항식 피처 생성"""
@@ -350,11 +311,11 @@ class FeatureEngineer:
         """통계적 피처 생성"""
         df_new = self.safe_data_conversion(df)
         
-        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        base_numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         if self.can_use_after_interaction and 'after_interaction' in df.columns:
-            numeric_cols.append('after_interaction')
+            base_numeric_cols.append('after_interaction')
         
-        available_cols = [col for col in numeric_cols if col in df.columns]
+        available_cols = [col for col in base_numeric_cols if col in df.columns]
         
         if len(available_cols) >= 3:
             numeric_data = df_new[available_cols].fillna(0)

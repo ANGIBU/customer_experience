@@ -69,15 +69,15 @@ class DataAnalyzer:
                 train_range = [min(train_id_nums), max(train_id_nums)]
                 test_range = [min(test_id_nums), max(test_id_nums)]
                 
-                overlap_threshold = int(np.percentile(train_id_nums, 80))
+                train_max = max(train_id_nums)
+                test_min = min(test_id_nums)
+                
+                overlap_threshold = min(train_max, test_min - 1000)
                 
                 self.temporal_threshold = overlap_threshold
                 
                 safe_indices = [i for i, tid in enumerate(train_id_nums) if tid <= overlap_threshold]
-                safe_ratio = len(safe_indices) / len(train_id_nums) if train_id_nums else 0.8
-                
-                train_max = max(train_id_nums)
-                test_min = min(test_id_nums)
+                safe_ratio = len(safe_indices) / len(train_id_nums) if train_id_nums else 0.5
                 
                 temporal_gap = test_min - train_max if train_max < test_min else 0
                 overlap_samples = len([x for x in train_id_nums if x >= test_min])
@@ -91,21 +91,21 @@ class DataAnalyzer:
                     'safe_indices': safe_indices,
                     'temporal_gap': temporal_gap,
                     'overlap_ratio': overlap_ratio,
-                    'has_temporal_leak': overlap_ratio > 0.01,
-                    'can_use_after_interaction': overlap_ratio <= 0.001
+                    'has_temporal_leak': overlap_ratio > 0.001,
+                    'can_use_after_interaction': overlap_ratio == 0.0 and temporal_gap > 500
                 }
             
             return {
-                'safe_ratio': 0.8,
-                'has_temporal_leak': False,
+                'safe_ratio': 0.5,
+                'has_temporal_leak': True,
                 'temporal_threshold': None,
-                'can_use_after_interaction': True
+                'can_use_after_interaction': False
             }
             
         except Exception as e:
             return {
-                'safe_ratio': 0.8,
-                'has_temporal_leak': False,
+                'safe_ratio': 0.5,
+                'has_temporal_leak': True,
                 'temporal_threshold': None,
                 'can_use_after_interaction': False
             }

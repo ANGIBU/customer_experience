@@ -17,22 +17,44 @@ class ValidationSystem:
         
     def safe_data_conversion(self, X, y=None):
         """안전한 데이터 변환"""
-        if hasattr(X, 'values'):
-            X_array = X.values
-        else:
-            X_array = np.array(X)
-        
-        X_clean = np.nan_to_num(X_array, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        if y is not None:
-            if hasattr(y, 'values'):
-                y_array = y.values
+        try:
+            if hasattr(X, 'values'):
+                X_array = X.values
             else:
-                y_array = np.array(y)
-            y_clean = np.clip(y_array, 0, 2)
-            return X_clean, y_clean
-        
-        return X_clean
+                X_array = np.array(X)
+            
+            X_clean = np.zeros(X_array.shape, dtype=float)
+            
+            for i in range(X_array.shape[1]):
+                col_data = X_array[:, i]
+                try:
+                    X_clean[:, i] = pd.to_numeric(col_data, errors='coerce').fillna(0)
+                except:
+                    X_clean[:, i] = 0
+            
+            X_clean = np.nan_to_num(X_clean, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            if y is not None:
+                if hasattr(y, 'values'):
+                    y_array = y.values
+                else:
+                    y_array = np.array(y)
+                y_clean = np.clip(pd.to_numeric(y_array, errors='coerce').fillna(0).astype(int), 0, 2)
+                return X_clean, y_clean
+            
+            return X_clean
+        except Exception as e:
+            print(f"데이터 변환 오류: {e}")
+            if hasattr(X, 'shape'):
+                X_clean = np.zeros(X.shape, dtype=float)
+            else:
+                X_clean = np.zeros((len(X), 1) if hasattr(X, '__len__') else (1, 1), dtype=float)
+            
+            if y is not None:
+                y_clean = np.zeros(len(y) if hasattr(y, '__len__') else 1, dtype=int)
+                return X_clean, y_clean
+            
+            return X_clean
         
     def check_temporal_leakage(self, train_df, test_df):
         """시간적 누수 확인"""
@@ -107,7 +129,7 @@ class ValidationSystem:
             n_jobs=-1
         )
         
-        model.fit(X_train_clean, y_train_clean)
+        model.fit(X_train_clean, y_train_clean.astype(int))
         return model
     
     def temporal_cross_validation(self, X, y, n_splits=4):
