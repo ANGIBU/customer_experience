@@ -68,8 +68,8 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 시간적 분할점 계산 (90% 퍼센타일로 완화)
-            overlap_threshold = int(np.percentile(train_id_nums, 90))
+            # 시간적 분할점 계산 (85% 퍼센타일로 조정)
+            overlap_threshold = int(np.percentile(train_id_nums, 85))
             
             self.temporal_threshold = overlap_threshold
             
@@ -125,7 +125,7 @@ class DataAnalyzer:
                 
                 f_stat, p_value = stats.f_oneway(*groups) if len(groups) >= 2 else (0, 1)
                 
-                # 완화된 누수 기준 (0.25, 0.5, 0.001)
+                # 누수 기준 (0.15, 0.3, 0.001)
                 leakage_features['after_interaction'] = {
                     'correlation': correlation,
                     'mutual_info': mi_score,
@@ -133,7 +133,7 @@ class DataAnalyzer:
                     'f_statistic': f_stat,
                     'p_value': p_value,
                     'class_stats': class_stats,
-                    'is_leakage': abs(correlation) > 0.25 or mi_score > 0.5 or p_value < 0.001
+                    'is_leakage': abs(correlation) > 0.15 or mi_score > 0.3 or p_value < 0.001
                 }
         
         return leakage_features
@@ -178,7 +178,7 @@ class DataAnalyzer:
                         'psi_score': psi_score,
                         'train_stats': train_stats,
                         'test_stats': test_stats,
-                        'is_stable': ks_stat < 0.08 and psi_score < 0.15
+                        'is_stable': ks_stat < 0.1 and psi_score < 0.2
                     }
         
         return stability_results
@@ -312,7 +312,7 @@ class DataAnalyzer:
             if col != 'ID':
                 missing_ratio = self.train_df[col].isnull().mean()
                 missing_info[col] = missing_ratio
-                if missing_ratio > 0.35:
+                if missing_ratio > 0.4:
                     issues.append(f"{col}_high_missing: {missing_ratio:.3f}")
         
         return len(issues) == 0, issues, missing_info

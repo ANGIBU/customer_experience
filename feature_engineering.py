@@ -59,20 +59,16 @@ class FeatureEngineer:
                 if 'support_needs' in train_df.columns:
                     # 안전 구간에서의 상관관계 분석
                     safe_data = train_df[safe_mask]
-                    if len(safe_data) > 1000:
+                    if len(safe_data) > 800:
                         correlation = safe_data[['after_interaction', 'support_needs']].corr().iloc[0, 1]
                         
-                        # 완화된 기준 적용 (0.2)
-                        if abs(correlation) < 0.2:
-                            # 시간 지연 적용
-                            train_processed['after_interaction_lag1'] = train_processed.groupby('ID')['after_interaction'].shift(1)
-                            train_processed['after_interaction_lag2'] = train_processed.groupby('ID')['after_interaction'].shift(2)
-                            train_processed['after_interaction_rolling_mean'] = train_processed.groupby('ID')['after_interaction'].rolling(3).mean().reset_index(0, drop=True)
+                        # 누수 기준 적용 (0.15)
+                        if abs(correlation) < 0.15:
+                            # 기본 변환만 적용
+                            train_processed['after_interaction_norm'] = train_processed['after_interaction'].fillna(train_processed['after_interaction'].median())
                             
                             if 'after_interaction' in test_df.columns:
-                                test_processed['after_interaction_lag1'] = test_processed.groupby('ID')['after_interaction'].shift(1)
-                                test_processed['after_interaction_lag2'] = test_processed.groupby('ID')['after_interaction'].shift(2)
-                                test_processed['after_interaction_rolling_mean'] = test_processed.groupby('ID')['after_interaction'].rolling(3).mean().reset_index(0, drop=True)
+                                test_processed['after_interaction_norm'] = test_processed['after_interaction'].fillna(train_processed['after_interaction'].median())
                         else:
                             # 누수 위험으로 제거
                             train_processed = train_processed.drop('after_interaction', axis=1)
@@ -166,32 +162,26 @@ class FeatureEngineer:
         return df_new
     
     def create_statistical_features(self, df):
-        """선택적 통계 피처 생성"""
+        """통계 피처 생성"""
         df_new = self.safe_data_conversion(df)
         
         # 핵심 피처만 변환
         key_features = ['age', 'tenure', 'frequent']
-        important_transforms = ['log', 'sqrt']
         
         for col in key_features:
             if col in df.columns:
                 values = np.clip(df_new[col].fillna(0), 0, 10000)
                 
-                # 로그 변환 (오른쪽 꼬리 분포에 효과적)
-                if 'log' in important_transforms:
-                    df_new[f'{col}_log'] = np.log1p(values)
+                # 로그 변환
+                df_new[f'{col}_log'] = np.log1p(values)
                 
-                # 제곱근 변환 (중간 정도 왜도에 효과적)
-                if 'sqrt' in important_transforms:
-                    df_new[f'{col}_sqrt'] = np.sqrt(values)
-                
-                # 분위수 변환 (이상치에 강함)
-                df_new[f'{col}_rank'] = values.rank(pct=True)
+                # 제곱근 변환
+                df_new[f'{col}_sqrt'] = np.sqrt(values)
         
         return df_new
     
     def create_interaction_features(self, df):
-        """핵심 상호작용 피처 생성"""
+        """상호작용 피처 생성"""
         df_new = self.safe_data_conversion(df)
         
         # 비즈니스 중요도 기반 상호작용
@@ -206,7 +196,7 @@ class FeatureEngineer:
                 val1 = np.clip(df_new[feat1].fillna(0), 0, 2000)
                 val2 = np.clip(df_new[feat2].fillna(0), 0, 2000)
                 
-                # 비율 (가장 중요한 상호작용)
+                # 비율
                 val2_safe = np.where(val2 == 0, 1, val2)
                 df_new[f'{feat1}_{feat2}_ratio'] = val1 / val2_safe
                 df_new[f'{feat1}_{feat2}_ratio'] = np.clip(df_new[f'{feat1}_{feat2}_ratio'], 0, 100)
@@ -239,7 +229,7 @@ class FeatureEngineer:
                     category_counts = fold_train.groupby(col).size()
                     
                     # 스무딩 파라미터
-                    alpha = min(25, max(3, len(fold_train) // 150))
+                    alpha = min(30, max(5, len(fold_train) // 120))
                     smoothed_means = (target_mean * category_counts + global_mean * alpha) / (category_counts + alpha)
                     
                     encoded_vals = fold_val[col].map(smoothed_means).fillna(global_mean)
@@ -252,7 +242,7 @@ class FeatureEngineer:
                 global_mean_all = train_df['support_needs'].mean()
                 category_counts_all = train_df.groupby(col).size()
                 
-                alpha_all = min(25, max(3, len(train_df) // 150))
+                alpha_all = min(30, max(5, len(train_df) // 120))
                 smoothed_means_all = (target_mean_all * category_counts_all + global_mean_all * alpha_all) / (category_counts_all + alpha_all)
                 
                 test_encoded = test_df[col].map(smoothed_means_all).fillna(global_mean_all)
@@ -284,8 +274,8 @@ class FeatureEngineer:
         train_scaled = scaler.fit_transform(train_numeric)
         test_scaled = scaler.transform(test_numeric)
         
-        # 최적 클러스터 수 (5개로 고정)
-        best_k = 5
+        # 클러스터 수 (4개로 조정)
+        best_k = 4
         
         # 클러스터링
         if self.kmeans_model is None:
@@ -332,7 +322,7 @@ class FeatureEngineer:
         
         return train_new, test_new
     
-    def select_features(self, train_df, target_col='support_needs', max_features=70):
+    def select_features(self, train_df, target_col='support_needs', max_features=60):
         """피처 선택"""
         if target_col not in train_df.columns:
             feature_cols = [col for col in train_df.columns if col not in ['ID']]
@@ -348,7 +338,7 @@ class FeatureEngineer:
         y = np.clip(train_df[target_col], 0, 2)
         
         # 분산 필터링
-        variance_selector = VarianceThreshold(threshold=0.0005)
+        variance_selector = VarianceThreshold(threshold=0.001)
         X_variance = variance_selector.fit_transform(X)
         variance_features = [feature_cols[i] for i, selected in enumerate(variance_selector.get_support()) if selected]
         
@@ -385,11 +375,11 @@ class FeatureEngineer:
         train_df = self.create_business_features(train_df)
         test_df = self.create_business_features(test_df)
         
-        # 선택적 통계 피처
+        # 통계 피처
         train_df = self.create_statistical_features(train_df)
         test_df = self.create_statistical_features(test_df)
         
-        # 핵심 상호작용 피처
+        # 상호작용 피처
         train_df = self.create_interaction_features(train_df)
         test_df = self.create_interaction_features(test_df)
         
