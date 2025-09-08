@@ -90,8 +90,8 @@ class ValidationSystem:
                 class_weights[i] = 1.0
         
         # 클래스 불균형 보정
-        class_weights[1] *= 1.18
-        class_weights[2] *= 1.05
+        class_weights[1] *= 1.12
+        class_weights[2] *= 1.03
         
         model = RandomForestClassifier(
             n_estimators=280,

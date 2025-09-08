@@ -403,15 +403,15 @@ class PredictionSystem:
         total_preds = len(predictions)
         
         # 클래스 1이 너무 적으면 조정
-        if pred_counts[1] < total_preds * 0.12:
+        if pred_counts[1] < total_preds * 0.10:
             class_1_proba = final_proba[:, 1]
-            top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.12):]
+            top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.10):]
             predictions[top_indices] = 1
         
         # 클래스 2가 너무 많으면 조정
-        if pred_counts[2] > total_preds * 0.45:
+        if pred_counts[2] > total_preds * 0.44:
             class_2_proba = final_proba[:, 2]
-            bottom_indices = np.argsort(class_2_proba)[:int(pred_counts[2] - total_preds * 0.42)]
+            bottom_indices = np.argsort(class_2_proba)[:int(pred_counts[2] - total_preds * 0.41)]
             predictions[bottom_indices] = 0
         
         # 제출 파일 생성

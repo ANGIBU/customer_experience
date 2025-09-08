@@ -389,13 +389,13 @@ class DataPreprocessor:
         X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
         test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
         
-        # 시간 기반 분할 with 조정된 갭 (1.5%)
+        # 시간 기반 분할 with 원본 갭 (0.5%)
         if 'temporal_id' in X.columns:
             temporal_ids = X['temporal_id'].values
             sorted_indices = np.argsort(temporal_ids)
             
             total_samples = len(sorted_indices)
-            gap_samples = int(total_samples * gap_size)  # 1.5%
+            gap_samples = int(total_samples * gap_size)  # 0.5%
             val_samples = int(total_samples * val_size)
             train_samples = total_samples - val_samples - gap_samples
             
