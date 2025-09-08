@@ -1,4 +1,5 @@
 # main.py
+# 정확도 : 0.4926465067
 
 import os
 import sys
