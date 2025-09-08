@@ -1,0 +1,29 @@
+# requirements.txt
+
+# 기본 데이터 처리
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 머신러닝 프레임워크
+scikit-learn>=1.3.0
+
+# 부스팅 모델
+lightgbm>=4.0.0
+xgboost>=2.0.0
+catboost>=1.2.0
+
+# 하이퍼파라미터 최적화 (conda 환경에서 설치 권장)
+hyperopt>=0.2.7
+
+# 시각화
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# 모델 저장/로드
+joblib>=1.3.0
+
+# 과학 계산 라이브러리
+scipy>=1.10.0
+
+# 불균형 데이터 처리
+imbalanced-learn>=0.11.0
