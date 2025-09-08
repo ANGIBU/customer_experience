@@ -1,5 +1,4 @@
 # main.py
-# 정확도 : 0.4926465067
 
 import os
 import sys
@@ -59,7 +58,7 @@ class AISystem:
             if 'temporal' in analysis_results:
                 temporal_info = analysis_results['temporal']
                 safe_ratio = temporal_info.get('safe_ratio', 1.0)
-                if safe_ratio < 0.90:
+                if safe_ratio < 0.88:
                     print(f"주의: 시간적 안전 비율 {safe_ratio:.1%}")
             
             # 타겟 누수 확인
@@ -154,7 +153,7 @@ class AISystem:
             
             # 시간 기반 분할
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_optimized(
-                train_final, test_final, val_size=0.18, gap_size=0.005
+                train_final, test_final, val_size=0.20, gap_size=0.025
             )
             
             if X_train is None or X_val is None or y_train is None or y_val is None:
@@ -418,19 +417,19 @@ class AISystem:
                     class_weights[i] = 1.0
             
             # 클래스 1 보정
-            class_weights[1] *= 1.1
-            class_weights[2] *= 1.05
+            class_weights[1] *= 1.32
+            class_weights[2] *= 1.08
             
             # 앙상블 모델 학습
             models = []
             
             # Random Forest
             rf_model = RandomForestClassifier(
-                n_estimators=500,
-                max_depth=12,
-                min_samples_split=8,
-                min_samples_leaf=4,
-                max_features=0.8,
+                n_estimators=550,
+                max_depth=14,
+                min_samples_split=6,
+                min_samples_leaf=3,
+                max_features=0.85,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
@@ -439,19 +438,19 @@ class AISystem:
             
             # Gradient Boosting
             gb_model = GradientBoostingClassifier(
-                n_estimators=300,
-                learning_rate=0.06,
-                max_depth=7,
-                min_samples_split=15,
-                min_samples_leaf=8,
-                subsample=0.85,
+                n_estimators=350,
+                learning_rate=0.05,
+                max_depth=8,
+                min_samples_split=12,
+                min_samples_leaf=6,
+                subsample=0.88,
                 random_state=42
             )
             models.append(('gb', gb_model))
             
             # 앙상블 예측
             ensemble_predictions = []
-            model_weights = [0.6, 0.4]  # RF에 더 높은 가중치
+            model_weights = [0.65, 0.35]  # RF에 더 높은 가중치
             
             for i, (name, model) in enumerate(models):
                 model.fit(X, y)
@@ -462,7 +461,7 @@ class AISystem:
             final_proba = np.sum(ensemble_predictions, axis=0)
             
             # 클래스 균형 조정
-            class_adjustments = np.array([1.0, 1.05, 1.02])
+            class_adjustments = np.array([0.99, 1.08, 1.01])
             adjusted_proba = final_proba * class_adjustments[np.newaxis, :]
             normalized_proba = adjusted_proba / adjusted_proba.sum(axis=1, keepdims=True)
             
@@ -473,9 +472,9 @@ class AISystem:
             total_preds = len(predictions)
             
             # 클래스 1이 너무 적으면 조정
-            if pred_counts[1] < total_preds * 0.08:
+            if pred_counts[1] < total_preds * 0.12:
                 class_1_proba = normalized_proba[:, 1]
-                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.08):]
+                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.12):]
                 predictions[top_indices] = 1
             
             # 제출 파일
@@ -593,9 +592,9 @@ class AISystem:
                 
                 if val_score >= self.target_accuracy and model_achieved:
                     print("✓ 목표 성능 달성")
-                elif val_score >= self.target_accuracy * 0.95:
+                elif val_score >= self.target_accuracy * 0.96:
                     print("→ 목표 근접")
-                elif success_rate >= 83:
+                elif success_rate >= 85:
                     print("→ 파이프라인 안정")
                 else:
                     print("→ 부분 성공")
