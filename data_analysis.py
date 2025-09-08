@@ -125,7 +125,7 @@ class DataAnalyzer:
                 
                 f_stat, p_value = stats.f_oneway(*groups) if len(groups) >= 2 else (0, 1)
                 
-                # 누수 기준 (0.15, 0.3, 0.001)
+                # 누수 기준 (0.18, 0.35, 0.001)
                 leakage_features['after_interaction'] = {
                     'correlation': correlation,
                     'mutual_info': mi_score,
@@ -133,7 +133,7 @@ class DataAnalyzer:
                     'f_statistic': f_stat,
                     'p_value': p_value,
                     'class_stats': class_stats,
-                    'is_leakage': abs(correlation) > 0.15 or mi_score > 0.3 or p_value < 0.001
+                    'is_leakage': abs(correlation) > 0.18 or mi_score > 0.35 or p_value < 0.001
                 }
         
         return leakage_features

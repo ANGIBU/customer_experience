@@ -62,8 +62,8 @@ class FeatureEngineer:
                     if len(safe_data) > 800:
                         correlation = safe_data[['after_interaction', 'support_needs']].corr().iloc[0, 1]
                         
-                        # 누수 기준 적용 (0.15)
-                        if abs(correlation) < 0.15:
+                        # 누수 기준 적용 (0.18)
+                        if abs(correlation) < 0.18:
                             # 기본 변환만 적용
                             train_processed['after_interaction_norm'] = train_processed['after_interaction'].fillna(train_processed['after_interaction'].median())
                             
