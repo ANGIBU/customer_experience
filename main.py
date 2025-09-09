@@ -23,8 +23,6 @@ class AISystem:
         
     def setup_environment(self):
         """환경 설정"""
-        print("AI 시스템 시작")
-        print("=" * 40)
         print(f"Python 버전: {sys.version}")
         print(f"작업 디렉토리: {os.getcwd()}")
         print(f"목표 정확도: {self.target_accuracy}")
