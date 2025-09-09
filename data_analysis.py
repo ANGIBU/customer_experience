@@ -68,13 +68,13 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 더 안전한 시간적 분할점 (78% 퍼센타일)
-            overlap_threshold = int(np.percentile(train_id_nums, 78))
+            # 원본 수준으로 복원 (87% 퍼센타일로 미세 조정)
+            overlap_threshold = int(np.percentile(train_id_nums, 87))
             
             self.temporal_threshold = overlap_threshold
             
             # 안전 구간 계산
-            safe_indices = [i for i, tid in enumerate(train_id_nums) if tid <= overlap_threshold]
+            safe_indices = [i for i, tid in enumerate(train_id_nums) if tid > overlap_threshold]
             safe_ratio = len(safe_indices) / len(train_id_nums)
             
             return {
@@ -125,7 +125,7 @@ class DataAnalyzer:
                 
                 f_stat, p_value = stats.f_oneway(*groups) if len(groups) >= 2 else (0, 1)
                 
-                # 더 엄격한 누수 기준 (0.10, 0.25, 0.001)
+                # 원본 누수 기준으로 복원 (0.18, 0.35, 0.001)
                 leakage_features['after_interaction'] = {
                     'correlation': correlation,
                     'mutual_info': mi_score,
@@ -133,7 +133,7 @@ class DataAnalyzer:
                     'f_statistic': f_stat,
                     'p_value': p_value,
                     'class_stats': class_stats,
-                    'is_leakage': abs(correlation) > 0.10 or mi_score > 0.25 or p_value < 0.001
+                    'is_leakage': abs(correlation) > 0.18 or mi_score > 0.35 or p_value < 0.001
                 }
         
         return leakage_features
@@ -178,7 +178,7 @@ class DataAnalyzer:
                         'psi_score': psi_score,
                         'train_stats': train_stats,
                         'test_stats': test_stats,
-                        'is_stable': ks_stat < 0.08 and psi_score < 0.15
+                        'is_stable': ks_stat < 0.1 and psi_score < 0.2
                     }
         
         return stability_results
