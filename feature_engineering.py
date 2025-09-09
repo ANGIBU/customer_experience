@@ -18,7 +18,7 @@ class FeatureEngineer:
         self.kmeans_model = None
         self.feature_stats = {}
         self.selected_features = None
-        self.scaler = None
+        self.scalers = {}
         self.is_fitted = False
         
     def safe_data_conversion(self, df):
@@ -59,11 +59,11 @@ class FeatureEngineer:
                 if 'support_needs' in train_df.columns:
                     # 안전 구간에서의 상관관계 분석
                     safe_data = train_df[safe_mask]
-                    if len(safe_data) > 800:
+                    if len(safe_data) > 1000:
                         correlation = safe_data[['after_interaction', 'support_needs']].corr().iloc[0, 1]
                         
-                        # 누수 기준 적용 (0.18)
-                        if abs(correlation) < 0.18:
+                        # 더 엄격한 누수 기준 (0.10)
+                        if abs(correlation) < 0.10:
                             # 기본 변환만 적용
                             train_processed['after_interaction_norm'] = train_processed['after_interaction'].fillna(train_processed['after_interaction'].median())
                             
@@ -223,13 +223,13 @@ class FeatureEngineer:
                     fold_train = train_df.iloc[train_idx]
                     fold_val = train_df.iloc[val_idx]
                     
-                    # 베이지안 스무딩
+                    # 더 강한 베이지안 스무딩
                     target_mean = fold_train.groupby(col)['support_needs'].mean()
                     global_mean = fold_train['support_needs'].mean()
                     category_counts = fold_train.groupby(col).size()
                     
-                    # 스무딩 파라미터
-                    alpha = min(30, max(5, len(fold_train) // 120))
+                    # 더 큰 스무딩 파라미터
+                    alpha = min(50, max(15, len(fold_train) // 80))
                     smoothed_means = (target_mean * category_counts + global_mean * alpha) / (category_counts + alpha)
                     
                     encoded_vals = fold_val[col].map(smoothed_means).fillna(global_mean)
@@ -242,7 +242,7 @@ class FeatureEngineer:
                 global_mean_all = train_df['support_needs'].mean()
                 category_counts_all = train_df.groupby(col).size()
                 
-                alpha_all = min(30, max(5, len(train_df) // 120))
+                alpha_all = min(50, max(15, len(train_df) // 80))
                 smoothed_means_all = (target_mean_all * category_counts_all + global_mean_all * alpha_all) / (category_counts_all + alpha_all)
                 
                 test_encoded = test_df[col].map(smoothed_means_all).fillna(global_mean_all)
@@ -263,19 +263,23 @@ class FeatureEngineer:
         
         # 이상치 처리
         for col in available_cols:
-            q01 = train_numeric[col].quantile(0.01)
-            q99 = train_numeric[col].quantile(0.99)
+            q01 = train_numeric[col].quantile(0.005)
+            q99 = train_numeric[col].quantile(0.995)
             
             train_numeric[col] = np.clip(train_numeric[col], q01, q99)
             test_numeric[col] = np.clip(test_numeric[col], q01, q99)
         
-        # 정규화
-        scaler = RobustScaler()
-        train_scaled = scaler.fit_transform(train_numeric)
-        test_scaled = scaler.transform(test_numeric)
+        # 그룹별 스케일링
+        if 'clustering' not in self.scalers:
+            self.scalers['clustering'] = RobustScaler()
+            train_scaled = self.scalers['clustering'].fit_transform(train_numeric)
+        else:
+            train_scaled = self.scalers['clustering'].transform(train_numeric)
+            
+        test_scaled = self.scalers['clustering'].transform(test_numeric)
         
-        # 클러스터 수 (4개로 조정)
-        best_k = 4
+        # 클러스터 수 (5개로 증가)
+        best_k = 5
         
         # 클러스터링
         if self.kmeans_model is None:
@@ -322,7 +326,37 @@ class FeatureEngineer:
         
         return train_new, test_new
     
-    def select_features(self, train_df, target_col='support_needs', max_features=60):
+    def apply_group_scaling(self, train_df, test_df):
+        """그룹별 스케일링"""
+        train_new = train_df.copy()
+        test_new = test_df.copy()
+        
+        # 피처 그룹 정의
+        feature_groups = {
+            'business': [col for col in train_df.columns if any(keyword in col for keyword in ['customer_value', 'payment_stability', 'usage_intensity'])],
+            'statistical': [col for col in train_df.columns if any(keyword in col for keyword in ['_log', '_sqrt'])],
+            'interaction': [col for col in train_df.columns if '_ratio' in col],
+            'basic': ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        }
+        
+        for group_name, group_cols in feature_groups.items():
+            available_cols = [col for col in group_cols if col in train_df.columns and col in test_df.columns]
+            
+            if available_cols:
+                if group_name not in self.scalers:
+                    self.scalers[group_name] = RobustScaler()
+                    train_scaled = self.scalers[group_name].fit_transform(train_df[available_cols])
+                else:
+                    train_scaled = self.scalers[group_name].transform(train_df[available_cols])
+                    
+                test_scaled = self.scalers[group_name].transform(test_df[available_cols])
+                
+                train_new[available_cols] = train_scaled
+                test_new[available_cols] = test_scaled
+        
+        return train_new, test_new
+    
+    def select_features(self, train_df, target_col='support_needs', max_features=55):
         """피처 선택"""
         if target_col not in train_df.columns:
             feature_cols = [col for col in train_df.columns if col not in ['ID']]
@@ -391,6 +425,9 @@ class FeatureEngineer:
         
         # 범주형 인코딩
         train_df, test_df = self.encode_categorical(train_df, test_df)
+        
+        # 그룹별 스케일링
+        train_df, test_df = self.apply_group_scaling(train_df, test_df)
         
         # 안전한 데이터 변환
         train_df = self.safe_data_conversion(train_df)

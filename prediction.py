@@ -66,7 +66,7 @@ class PredictionSystem:
             if os.path.exists('models/feature_info.pkl'):
                 self.feature_info = joblib.load('models/feature_info.pkl')
                 self.feature_names = self.feature_info.get('feature_names', [])
-                self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 1.1, 2: 1.05})
+                self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 1.2, 2: 1.1})
                 self.ensemble_weights = self.feature_info.get('ensemble_weights', {})
             
             # 모델 파일 로드
@@ -78,6 +78,7 @@ class PredictionSystem:
                 ('gradient_boosting', 'models/gradient_boosting_model.pkl', 'pkl'),
                 ('extra_trees', 'models/extra_trees_model.pkl', 'pkl'),
                 ('neural_network', 'models/neural_network_model.pkl', 'pkl'),
+                ('logistic_regression', 'models/logistic_regression_model.pkl', 'pkl'),
                 ('stacking', 'models/stacking_model.pkl', 'pkl')
             ]
             
@@ -264,7 +265,7 @@ class PredictionSystem:
         if not model_predictions or len(model_predictions) < 2:
             return None
         
-        # 저장된 가중치 사용
+        # 저장된 가중치 사용 (균형잡힌 가중치)
         if self.ensemble_weights:
             weights = {}
             total_weight = 0
@@ -272,7 +273,7 @@ class PredictionSystem:
                 if model_name in self.ensemble_weights:
                     weights[model_name] = self.ensemble_weights[model_name]
                 else:
-                    weights[model_name] = 0.08
+                    weights[model_name] = 0.05
                 total_weight += weights[model_name]
             
             # 정규화
@@ -285,16 +286,17 @@ class PredictionSystem:
             
             return weights
         
-        # 기본 가중치
+        # 더 균형잡힌 기본 가중치
         default_weights = {
-            'lightgbm': 0.28,
-            'xgboost': 0.25,
-            'catboost': 0.22,
-            'gradient_boosting': 0.10,
-            'random_forest': 0.08,
-            'stacking': 0.04,
-            'extra_trees': 0.02,
-            'neural_network': 0.01
+            'lightgbm': 0.22,
+            'xgboost': 0.20,
+            'catboost': 0.18,
+            'gradient_boosting': 0.12,
+            'random_forest': 0.10,
+            'extra_trees': 0.08,
+            'neural_network': 0.05,
+            'logistic_regression': 0.03,
+            'stacking': 0.02
         }
         
         available_models = list(model_predictions.keys())
@@ -345,24 +347,49 @@ class PredictionSystem:
         
         return ensemble_proba
     
+    def apply_individual_temperature_scaling(self, model_predictions):
+        """모델별 개별 temperature scaling"""
+        try:
+            # 모델별 최적 temperature
+            model_temperatures = {
+                'lightgbm': 1.05,
+                'xgboost': 1.03,
+                'catboost': 1.02,
+                'gradient_boosting': 1.08,
+                'random_forest': 1.12,
+                'extra_trees': 1.15,
+                'neural_network': 0.95,
+                'logistic_regression': 0.98,
+                'stacking': 1.00
+            }
+            
+            calibrated_predictions = {}
+            
+            for model_name, pred_proba in model_predictions.items():
+                temperature = model_temperatures.get(model_name, 1.0)
+                
+                # 로그 확률로 변환
+                log_proba = np.log(np.clip(pred_proba, 1e-7, 1-1e-7))
+                
+                # Temperature scaling
+                scaled_log_proba = log_proba / temperature
+                
+                # Softmax 적용
+                calibrated_proba = softmax(scaled_log_proba, axis=1)
+                
+                calibrated_predictions[model_name] = calibrated_proba
+            
+            return calibrated_predictions
+            
+        except Exception:
+            return model_predictions
+    
     def apply_calibration(self, pred_proba):
         """확률 보정"""
         try:
-            # Temperature scaling
-            temperature = 1.01
-            
-            # 로그 확률로 변환
-            log_proba = np.log(np.clip(pred_proba, 1e-7, 1-1e-7))
-            
-            # Temperature scaling
-            scaled_log_proba = log_proba / temperature
-            
-            # Softmax 적용
-            calibrated_proba = softmax(scaled_log_proba, axis=1)
-            
-            # Platt scaling 보정
-            platt_weights = np.array([1.01, 0.99, 1.00])
-            platt_adjusted = calibrated_proba * platt_weights[np.newaxis, :]
+            # 더 섬세한 Platt scaling 보정
+            platt_weights = np.array([1.02, 0.97, 1.01])
+            platt_adjusted = pred_proba * platt_weights[np.newaxis, :]
             
             # 재정규화
             final_proba = platt_adjusted / platt_adjusted.sum(axis=1, keepdims=True)
@@ -374,8 +401,8 @@ class PredictionSystem:
     
     def apply_class_adjustment(self, pred_proba):
         """클래스 균형 조정"""
-        # 클래스별 조정 계수
-        class_adjustments = np.array([1.0, 1.03, 1.01])
+        # 더 정밀한 클래스별 조정 계수
+        class_adjustments = np.array([1.01, 1.05, 1.02])
         
         adjusted_proba = pred_proba * class_adjustments[np.newaxis, :]
         
@@ -396,8 +423,12 @@ class PredictionSystem:
         if not model_predictions:
             return self.create_fallback_predictions(X_test, test_ids)
         
+        # 모델별 개별 temperature scaling
+        calibrated_predictions = self.apply_individual_temperature_scaling(model_predictions)
+        print("개별 temperature scaling 완료")
+        
         # 가중 앙상블
-        ensemble_proba = self.weighted_ensemble_prediction(model_predictions)
+        ensemble_proba = self.weighted_ensemble_prediction(calibrated_predictions)
         
         if ensemble_proba is None:
             return self.create_fallback_predictions(X_test, test_ids)
@@ -421,19 +452,43 @@ class PredictionSystem:
         
         print(f"후처리 전 분포 - 0: {pred_counts[0]}, 1: {pred_counts[1]}, 2: {pred_counts[2]}")
         
+        # 더 정밀한 클래스 분포 조정
+        target_class_1_ratio = 0.10  # 클래스 1 목표 비율
+        target_class_2_ratio = 0.38  # 클래스 2 목표 비율
+        
         # 클래스 1이 너무 적으면 조정
-        if pred_counts[1] < total_preds * 0.08:
+        if pred_counts[1] < total_preds * target_class_1_ratio:
             class_1_proba = final_proba[:, 1]
-            top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.08):]
-            predictions[top_indices] = 1
-            print("클래스 1 조정 적용됨")
+            # 클래스 0에서 확률이 높은 것들을 클래스 1로 변경
+            class_0_mask = predictions == 0
+            class_0_indices = np.where(class_0_mask)[0]
+            
+            if len(class_0_indices) > 0:
+                class_0_proba_1 = class_1_proba[class_0_indices]
+                needed_count = int(total_preds * target_class_1_ratio) - pred_counts[1]
+                needed_count = min(needed_count, len(class_0_indices))
+                
+                if needed_count > 0:
+                    top_indices = class_0_indices[np.argsort(class_0_proba_1)[-needed_count:]]
+                    predictions[top_indices] = 1
+                    print("클래스 1 조정 적용됨")
         
         # 클래스 2가 너무 많으면 조정
-        if pred_counts[2] > total_preds * 0.425:
+        pred_counts = np.bincount(predictions, minlength=3)
+        if pred_counts[2] > total_preds * target_class_2_ratio:
             class_2_proba = final_proba[:, 2]
-            bottom_indices = np.argsort(class_2_proba)[:int(pred_counts[2] - total_preds * 0.40)]
-            predictions[bottom_indices] = 0
-            print("클래스 2 조정 적용됨")
+            class_2_mask = predictions == 2
+            class_2_indices = np.where(class_2_mask)[0]
+            
+            if len(class_2_indices) > 0:
+                excess_count = pred_counts[2] - int(total_preds * target_class_2_ratio)
+                excess_count = min(excess_count, len(class_2_indices))
+                
+                if excess_count > 0:
+                    # 확률이 낮은 것들을 클래스 0으로 변경
+                    bottom_indices = class_2_indices[np.argsort(class_2_proba[class_2_indices])[:excess_count]]
+                    predictions[bottom_indices] = 0
+                    print("클래스 2 조정 적용됨")
         
         # 최종 분포 확인
         final_counts = np.bincount(predictions, minlength=3)
@@ -498,14 +553,14 @@ class PredictionSystem:
                     else:
                         class_weights[i] = 1.0
                 
-                class_weights[1] *= 1.1
+                class_weights[1] *= 1.15
             
             # 모델 학습
             model = RandomForestClassifier(
-                n_estimators=450,
-                max_depth=13,
-                min_samples_split=6,
-                min_samples_leaf=3,
+                n_estimators=500,
+                max_depth=14,
+                min_samples_split=5,
+                min_samples_leaf=2,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
@@ -527,9 +582,9 @@ class PredictionSystem:
             total_preds = len(predictions)
             
             # 클래스 1이 너무 적으면 조정
-            if pred_counts[1] < total_preds * 0.08:
+            if pred_counts[1] < total_preds * 0.09:
                 class_1_proba = calibrated_proba[:, 1]
-                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.08):]
+                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.09):]
                 predictions[top_indices] = 1
             
             # 제출 파일
@@ -545,7 +600,7 @@ class PredictionSystem:
         except Exception as e:
             # 최종 대체 (랜덤 예측)
             np.random.seed(42)
-            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.42, 0.28, 0.30])
+            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.52, 0.10, 0.38])
             
             submission_df = pd.DataFrame({
                 'ID': test_ids,
