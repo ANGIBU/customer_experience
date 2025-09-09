@@ -416,9 +416,9 @@ class AISystem:
                 else:
                     class_weights[i] = 1.0
             
-            # 클래스 1 보정
-            class_weights[1] *= 1.12
-            class_weights[2] *= 1.03
+            # 클래스 1 보정 (원본 수준)
+            class_weights[1] *= 1.1
+            class_weights[2] *= 1.05
             
             # 앙상블 모델 학습
             models = []

@@ -278,7 +278,10 @@ class PredictionSystem:
                 for model_name in weights:
                     weights[model_name] /= total_weight
             
-            return weights
+            # 강제 디버깅 정보 출력
+            print(f"디버깅: 앙상블 모델 수 = {len(individual_predictions)}")
+            print(f"디버깅: 앙상블 가중치 = {weights}")
+            print("디버깅: 확률 보정 적용됨")
         
         # 기본 가중치 (수정됨)
         default_weights = {
