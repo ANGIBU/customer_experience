@@ -534,7 +534,7 @@ class PredictionSystem:
         except Exception as e:
             # 최종 대체 (분포 기반 랜덤 예측)
             np.random.seed(42)
-            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.46, 0.27, 0.27])
+            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.45, 0.35, 0.20])
             
             submission_df = pd.DataFrame({
                 'ID': test_ids,

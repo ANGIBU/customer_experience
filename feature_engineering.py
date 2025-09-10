@@ -236,7 +236,7 @@ class FeatureEngineer:
                     category_counts = fold_train.groupby(col).size()
                     
                     # 스무딩 파라미터
-                    alpha = min(20, max(3, len(fold_train) // 150))
+                    alpha = min(25, max(3, len(fold_train) // 150))
                     smoothed_means = (target_mean * category_counts + global_mean * alpha) / (category_counts + alpha)
                     
                     encoded_vals = fold_val[col].map(smoothed_means).fillna(global_mean)

@@ -98,7 +98,7 @@ class ModelTrainer:
                 raise ValueError("전처리 실패")
             
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_optimized(
-                train_df, test_df, val_size=0.17, gap_size=0.003
+                train_df, test_df, val_size=0.18, gap_size=0.005
             )
             
             if X_train is None or X_val is None:

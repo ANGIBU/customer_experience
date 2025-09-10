@@ -389,17 +389,17 @@ class DataPreprocessor:
         X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
         test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
         
-        # 시간 기반 분할 with 더욱 축소된 갭 (0.2%)
+        # 시간 기반 분할 with 축소된 갭 (1%)
         if 'temporal_id' in X.columns:
             temporal_ids = X['temporal_id'].values
             sorted_indices = np.argsort(temporal_ids)
             
             total_samples = len(sorted_indices)
-            gap_samples = int(total_samples * gap_size)  # 0.2%
+            gap_samples = int(total_samples * gap_size)  # 1%
             val_samples = int(total_samples * val_size)
             train_samples = total_samples - val_samples - gap_samples
             
-            if train_samples < 800 or val_samples < 400:
+            if train_samples < 600 or val_samples < 300:
                 # 데이터 부족시 계층화 분할
                 from sklearn.model_selection import train_test_split
                 X_train, X_val, y_train, y_val = train_test_split(
