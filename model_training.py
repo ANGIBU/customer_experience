@@ -251,11 +251,11 @@ class ModelTrainer:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = RandomForestClassifier(
-            n_estimators=450,
-            max_depth=12,
-            min_samples_split=6,
-            min_samples_leaf=3,
-            max_features=0.78,
+            n_estimators=400,
+            max_depth=11,
+            min_samples_split=8,
+            min_samples_leaf=4,
+            max_features=0.75,
             bootstrap=True,
             class_weight=self.class_weights,
             random_state=42,

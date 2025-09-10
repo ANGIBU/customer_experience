@@ -384,16 +384,10 @@ class PredictionSystem:
         pred_counts = np.bincount(final_predictions, minlength=3)
         total_preds = len(final_predictions)
         
-        if pred_counts[0] < total_preds * 0.42:
-            class_0_proba = final_proba[:, 0]
-            needed_count = int(total_preds * 0.42) - pred_counts[0]
-            if needed_count > 0:
-                top_indices = np.argsort(class_0_proba)[-needed_count:]
-                final_predictions[top_indices] = 0
-        
-        if pred_counts[1] < total_preds * 0.25:
+        # 클래스 1이 너무 적으면 조정
+        if pred_counts[1] < total_preds * 0.08:
             class_1_proba = final_proba[:, 1]
-            needed_count = int(total_preds * 0.25) - pred_counts[1]
+            needed_count = int(total_preds * 0.08) - pred_counts[1]
             if needed_count > 0:
                 top_indices = np.argsort(class_1_proba)[-needed_count:]
                 final_predictions[top_indices] = 1
