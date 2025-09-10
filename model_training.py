@@ -264,16 +264,15 @@ class HierarchicalPortfolioStacker:
                 meta_predictions[val_idx, start_col:start_col+3] = pred
         
         # 최종 집계기
+        dynamic_weights = self.weight_calculator.calculate_adaptive_weights(y)
         self.final_aggregator = LogisticRegression(
             multi_class='multinomial', C=0.05, max_iter=800,
-            random_state=42
+            class_weight=dynamic_weights, random_state=42
         )
         
         # 최종 피처: 원본 + 메타 예측
         final_features = np.column_stack([level1_features, meta_predictions])
         
-        dynamic_weights = self.weight_calculator.calculate_adaptive_weights(y)
-        self.final_aggregator.set_params(class_weight=dynamic_weights)
         self.final_aggregator.fit(final_features, y)
     
     def predict_proba(self, X):
