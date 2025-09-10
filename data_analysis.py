@@ -68,9 +68,8 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 원본 수준으로 복원 (87% 퍼센타일로 미세 조정)
-            overlap_threshold = int(np.percentile(train_id_nums, 87))
-            
+            # 시간적 임계값 조정 (90% 퍼센타일)
+            overlap_threshold = int(np.percentile(train_id_nums, 90))
             self.temporal_threshold = overlap_threshold
             
             # 안전 구간 계산
@@ -125,22 +124,21 @@ class DataAnalyzer:
                 
                 f_stat, p_value = stats.f_oneway(*groups) if len(groups) >= 2 else (0, 1)
                 
-                # 원본 누수 기준으로 복원 (0.18, 0.35, 0.001)
+                # 누수 기준 강화
                 leakage_features['after_interaction'] = {
                     'correlation': correlation,
                     'mutual_info': mi_score,
                     'class_separation': separation,
                     'f_statistic': f_stat,
                     'p_value': p_value,
-                    'class_stats': class_stats,
-                    'is_leakage': abs(correlation) > 0.18 or mi_score > 0.35 or p_value < 0.001
+                    'is_leakage': abs(correlation) > 0.15 or mi_score > 0.30 or p_value < 0.005
                 }
         
         return leakage_features
     
     def analyze_feature_stability(self):
         """피처 안정성 분석"""
-        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'after_interaction']
+        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         stability_results = {}
         
         for feature in numeric_features:
@@ -178,7 +176,7 @@ class DataAnalyzer:
                         'psi_score': psi_score,
                         'train_stats': train_stats,
                         'test_stats': test_stats,
-                        'is_stable': ks_stat < 0.1 and psi_score < 0.2
+                        'is_stable': ks_stat < 0.08 and psi_score < 0.15
                     }
         
         return stability_results
@@ -312,7 +310,7 @@ class DataAnalyzer:
             if col != 'ID':
                 missing_ratio = self.train_df[col].isnull().mean()
                 missing_info[col] = missing_ratio
-                if missing_ratio > 0.4:
+                if missing_ratio > 0.35:
                     issues.append(f"{col}_high_missing: {missing_ratio:.3f}")
         
         return len(issues) == 0, issues, missing_info
