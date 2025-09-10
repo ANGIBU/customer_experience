@@ -1,5 +1,4 @@
 # main.py
-# 정확도 : 0.4926465067
 
 import os
 import sys
@@ -30,7 +29,6 @@ class AISystem:
         print(f"작업 디렉토리: {os.getcwd()}")
         print(f"목표 정확도: {self.target_accuracy}")
         
-        # 필수 파일 확인
         required_files = ['train.csv', 'test.csv', 'sample_submission.csv']
         missing_files = [f for f in required_files if not os.path.exists(f)]
         
@@ -38,7 +36,6 @@ class AISystem:
             print(f"필수 파일 누락: {missing_files}")
             return False
         
-        # 모델 디렉토리 생성
         os.makedirs('models', exist_ok=True)
         
         self.start_time = time.time()
@@ -55,21 +52,18 @@ class AISystem:
             
             self.results['data_analysis'] = analysis_results
             
-            # 시간적 누수 확인
             if 'temporal' in analysis_results:
                 temporal_info = analysis_results['temporal']
                 safe_ratio = temporal_info.get('safe_ratio', 1.0)
-                if safe_ratio < 0.90:
+                if safe_ratio < 0.88:
                     print(f"주의: 시간적 안전 비율 {safe_ratio:.1%}")
             
-            # 타겟 누수 확인
             if 'leakage' in analysis_results:
                 leakage_info = analysis_results['leakage']
                 if 'after_interaction' in leakage_info:
                     if leakage_info['after_interaction'].get('is_leakage', False):
                         print("주의: after_interaction 피처 누수 위험")
             
-            # 데이터 무결성
             integrity_info = analysis_results.get('integrity', {})
             if not integrity_info.get('passed', True):
                 print(f"주의: 데이터 무결성 문제 {len(integrity_info.get('issues', []))}개")
@@ -95,7 +89,6 @@ class AISystem:
                 print("데이터 파일 비어있음")
                 return False, None, None, None
             
-            # 시간적 임계값 가져오기
             temporal_threshold = None
             if 'data_analysis' in self.results:
                 temporal_info = self.results['data_analysis'].get('temporal', {})
@@ -108,8 +101,8 @@ class AISystem:
                 print("피처 생성 실패")
                 return False, None, None, None
             
-            original_features = train_df.shape[1] - 1  # ID 제외
-            final_features = train_processed.shape[1] - 2  # ID, support_needs 제외
+            original_features = train_df.shape[1] - 1
+            final_features = train_processed.shape[1] - 2
             
             self.results['feature_engineering'] = {
                 'original_features': original_features,
@@ -137,7 +130,6 @@ class AISystem:
             
             preprocessor = DataPreprocessor()
             
-            # 시간적 정보 전달
             temporal_info = None
             if 'data_analysis' in self.results:
                 temporal_info = self.results['data_analysis'].get('temporal')
@@ -152,9 +144,8 @@ class AISystem:
                 print("전처리 데이터 비어있음")
                 return False, None, None, None, None, None, None, None
             
-            # 시간 기반 분할
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_optimized(
-                train_final, test_final, val_size=0.18, gap_size=0.005
+                train_final, test_final, val_size=0.20, gap_size=0.015
             )
             
             if X_train is None or X_val is None or y_train is None or y_val is None:
@@ -198,7 +189,6 @@ class AISystem:
             
             self.results['validation'] = validation_results
             
-            # 검증 성능 확인
             overall_score = validation_results.get('overall_score', 0.0)
             holdout_score = validation_results.get('component_scores', {}).get('holdout_score', 0.0)
             cv_score = validation_results.get('component_scores', {}).get('cv_score', 0.0)
@@ -243,7 +233,6 @@ class AISystem:
             
             trainer.train_models(X_train, X_val, y_train, y_val, engineer, preprocessor)
             
-            # 성능 확인
             best_score = 0.0
             best_model_name = None
             model_count = len(trainer.models)
@@ -373,14 +362,12 @@ class AISystem:
             train_df = pd.read_csv('train.csv')
             test_df = pd.read_csv('test.csv')
             
-            # 피처 준비
             numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
             categorical_cols = ['gender', 'subscription_type']
             
             train_processed = train_df.copy()
             test_processed = test_df.copy()
             
-            # 범주형 인코딩
             le = LabelEncoder()
             for col in categorical_cols:
                 if col in train_df.columns and col in test_df.columns:
@@ -389,7 +376,6 @@ class AISystem:
                     train_processed[col] = le.transform(train_df[col].fillna('Unknown'))
                     test_processed[col] = le.transform(test_df[col].fillna('Unknown'))
             
-            # 추가 피처 생성
             if all(col in train_processed.columns for col in ['age', 'tenure']):
                 train_processed['age_tenure_ratio'] = train_processed['age'] / (train_processed['tenure'] + 1)
                 test_processed['age_tenure_ratio'] = test_processed['age'] / (test_processed['tenure'] + 1)
@@ -398,7 +384,6 @@ class AISystem:
                 train_processed['frequency_payment_ratio'] = train_processed['frequent'] / (train_processed['payment_interval'] + 1)
                 test_processed['frequency_payment_ratio'] = test_processed['frequent'] / (test_processed['payment_interval'] + 1)
             
-            # 피처 선택
             feature_cols = numeric_cols + categorical_cols + ['age_tenure_ratio', 'frequency_payment_ratio']
             feature_cols = [col for col in feature_cols if col in train_processed.columns and col in test_processed.columns]
             
@@ -406,7 +391,6 @@ class AISystem:
             y = train_processed['support_needs']
             X_test = test_processed[feature_cols].fillna(0)
             
-            # 클래스 가중치 계산
             class_counts = np.bincount(y)
             total_samples = len(y)
             class_weights = {}
@@ -417,68 +401,64 @@ class AISystem:
                 else:
                     class_weights[i] = 1.0
             
-            # 클래스 1 보정
-            class_weights[1] *= 1.1
-            class_weights[2] *= 1.05
+            class_weights[0] *= 1.15
+            class_weights[1] *= 1.12
+            class_weights[2] *= 0.88
             
-            # 앙상블 모델 학습
             models = []
             
-            # Random Forest
             rf_model = RandomForestClassifier(
                 n_estimators=500,
                 max_depth=12,
-                min_samples_split=8,
-                min_samples_leaf=4,
-                max_features=0.8,
+                min_samples_split=6,
+                min_samples_leaf=3,
+                max_features=0.78,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
             )
             models.append(('rf', rf_model))
             
-            # Gradient Boosting
             gb_model = GradientBoostingClassifier(
                 n_estimators=300,
-                learning_rate=0.06,
+                learning_rate=0.05,
                 max_depth=7,
-                min_samples_split=15,
-                min_samples_leaf=8,
-                subsample=0.85,
+                min_samples_split=12,
+                min_samples_leaf=6,
+                subsample=0.88,
                 random_state=42
             )
             models.append(('gb', gb_model))
             
-            # 앙상블 예측
             ensemble_predictions = []
-            model_weights = [0.6, 0.4]  # RF에 더 높은 가중치
+            model_weights = [0.65, 0.35]
             
             for i, (name, model) in enumerate(models):
                 model.fit(X, y)
                 pred_proba = model.predict_proba(X_test)
                 ensemble_predictions.append(pred_proba * model_weights[i])
             
-            # 가중 평균
             final_proba = np.sum(ensemble_predictions, axis=0)
             
-            # 클래스 균형 조정
-            class_adjustments = np.array([1.0, 1.05, 1.02])
+            class_adjustments = np.array([1.15, 1.08, 0.85])
             adjusted_proba = final_proba * class_adjustments[np.newaxis, :]
             normalized_proba = adjusted_proba / adjusted_proba.sum(axis=1, keepdims=True)
             
             predictions = np.argmax(normalized_proba, axis=1)
             
-            # 분포 후처리
             pred_counts = np.bincount(predictions, minlength=3)
             total_preds = len(predictions)
             
-            # 클래스 1이 너무 적으면 조정
-            if pred_counts[1] < total_preds * 0.08:
+            if pred_counts[0] < total_preds * 0.40:
+                class_0_proba = normalized_proba[:, 0]
+                top_indices = np.argsort(class_0_proba)[-int(total_preds * 0.05):]
+                predictions[top_indices] = 0
+            
+            if pred_counts[1] < total_preds * 0.20:
                 class_1_proba = normalized_proba[:, 1]
-                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.08):]
+                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.03):]
                 predictions[top_indices] = 1
             
-            # 제출 파일
             submission_df = pd.DataFrame({
                 'ID': test_processed['ID'],
                 'support_needs': predictions.astype(int)
@@ -486,7 +466,6 @@ class AISystem:
             
             submission_df.to_csv('submission.csv', index=False)
             
-            # 분포 출력
             final_counts = submission_df['support_needs'].value_counts().sort_index()
             print("대체 예측 분포:")
             for cls in [0, 1, 2]:
@@ -517,7 +496,6 @@ class AISystem:
             total_time = time.time() - self.start_time if self.start_time else 0
             print(f"총 실행 시간: {total_time:.1f}초")
             
-            # 데이터 분석 결과
             if 'data_analysis' in self.results:
                 da = self.results['data_analysis']
                 integrity = da.get('integrity', {})
@@ -526,7 +504,6 @@ class AISystem:
                 else:
                     print(f"데이터 무결성: 문제 {len(integrity.get('issues', []))}개")
             
-            # 피처 생성 결과
             if 'feature_engineering' in self.results:
                 fe = self.results['feature_engineering']
                 print(f"피처 확장: {fe['original_features']} → {fe['final_features']}")
@@ -534,12 +511,10 @@ class AISystem:
                 if fe.get('temporal_threshold'):
                     print(f"시간적 임계값: {fe['temporal_threshold']}")
             
-            # 전처리 결과
             if 'preprocessing' in self.results:
                 pp = self.results['preprocessing']
                 print(f"최종 피처: {pp.get('selected_features', 0)}개")
             
-            # 검증 결과
             if 'validation' in self.results:
                 val = self.results['validation']
                 overall_score = val.get('overall_score', 0.0)
@@ -551,7 +526,6 @@ class AISystem:
                     gap = self.target_accuracy - overall_score
                     print(f"목표까지: {gap:.4f}")
             
-            # 모델 학습 결과
             if 'model_training' in self.results:
                 mt = self.results['model_training']
                 print(f"학습 모델: {mt['models_count']}개")
@@ -563,7 +537,6 @@ class AISystem:
                 if mt['target_achieved']:
                     print("✓ 모델 목표 달성")
             
-            # 예측 결과
             if 'prediction' in self.results:
                 pred = self.results['prediction']
                 print("예측 분포:")
@@ -579,21 +552,19 @@ class AISystem:
                 if 'method' in pred:
                     print(f"예측 방법: {pred['method']}")
             
-            # 전체 성공률
             total_steps = 6
             completed_steps = sum(1 for step in ['data_analysis', 'feature_engineering', 'preprocessing', 'validation', 'model_training', 'prediction'] if step in self.results)
             success_rate = completed_steps / total_steps * 100
             
             print(f"\n단계 완료율: {completed_steps}/{total_steps} ({success_rate:.1f}%)")
             
-            # 성능 등급
             if 'validation' in self.results and 'model_training' in self.results:
                 val_score = self.results['validation'].get('overall_score', 0.0)
                 model_achieved = self.results['model_training'].get('target_achieved', False)
                 
                 if val_score >= self.target_accuracy and model_achieved:
                     print("✓ 목표 성능 달성")
-                elif val_score >= self.target_accuracy * 0.95:
+                elif val_score >= self.target_accuracy * 0.96:
                     print("→ 목표 근접")
                 elif success_rate >= 83:
                     print("→ 파이프라인 안정")
@@ -606,17 +577,14 @@ class AISystem:
     def run_system(self):
         """전체 시스템 실행"""
         try:
-            # 환경 설정
             if not self.setup_environment():
                 print("환경 설정 실패")
                 return False
             
-            # 1단계: 데이터 분석
             success, analyzer = self.step1_data_analysis()
             if not success:
                 print("1단계 실패 - 계속 진행")
             
-            # 2단계: 피처 생성
             success, engineer, train_df, test_df = self.step2_feature_engineering()
             if not success or train_df is None or test_df is None:
                 print("2단계 실패 - 대체 예측")
@@ -628,7 +596,6 @@ class AISystem:
                     print("대체 예측 실패")
                     return False
             
-            # 3단계: 전처리
             success, preprocessor, X_train, X_val, y_train, y_val, X_test, test_ids = self.step3_preprocessing(train_df, test_df)
             if not success or any(data is None for data in [X_train, X_val, y_train, y_val]):
                 print("3단계 실패 - 대체 예측")
@@ -640,17 +607,14 @@ class AISystem:
                     print("대체 예측 실패")
                     return False
             
-            # 4단계: 검증
             success, validator = self.step4_validation(X_train, y_train, X_val, y_val)
             if not success:
                 print("4단계 실패 - 계속 진행")
             
-            # 5단계: 모델 학습
             success, trainer = self.step5_model_training(X_train, X_val, y_train, y_val, engineer, preprocessor)
             if not success:
                 print("5단계 실패 - 계속 진행")
             
-            # 6단계: 예측 생성
             success, submission_df = self.step6_prediction()
             if not success:
                 print("6단계 실패 - 최종 대체")
@@ -659,7 +623,6 @@ class AISystem:
                     print("최종 대체 실패")
                     return False
             
-            # 보고서 생성
             self.generate_report()
             
             print(f"\n{'='*50}")
