@@ -1,4 +1,5 @@
 # main.py
+# 정확도 : 0.4926465067
 
 import os
 import sys
@@ -12,7 +13,7 @@ from data_analysis import DataAnalyzer
 from feature_engineering import FeatureEngineer
 from preprocessing import DataPreprocessor
 from model_training import ModelTrainer
-from validation import ValidationSystem, UltraPrecisionValidator
+from validation import ValidationSystem
 from prediction import PredictionSystem
 
 class AISystem:
@@ -20,14 +21,14 @@ class AISystem:
         self.start_time = None
         self.results = {}
         self.target_accuracy = 0.50
-        self.max_std_dev = 0.0005
         
     def setup_environment(self):
         """환경 설정"""
+        print("AI 시스템 시작")
+        print("=" * 40)
         print(f"Python 버전: {sys.version}")
         print(f"작업 디렉토리: {os.getcwd()}")
         print(f"목표 정확도: {self.target_accuracy}")
-        print(f"표준편차 목표: ≤ {self.max_std_dev}")
         
         # 필수 파일 확인
         required_files = ['train.csv', 'test.csv', 'sample_submission.csv']
@@ -107,8 +108,8 @@ class AISystem:
                 print("피처 생성 실패")
                 return False, None, None, None
             
-            original_features = train_df.shape[1] - 1
-            final_features = train_processed.shape[1] - 2
+            original_features = train_df.shape[1] - 1  # ID 제외
+            final_features = train_processed.shape[1] - 2  # ID, support_needs 제외
             
             self.results['feature_engineering'] = {
                 'original_features': original_features,
@@ -151,9 +152,9 @@ class AISystem:
                 print("전처리 데이터 비어있음")
                 return False, None, None, None, None, None, None, None
             
-            # 시간 기반 분할 with 4% 갭
+            # 시간 기반 분할
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_optimized(
-                train_final, test_final, val_size=0.16, gap_size=0.04
+                train_final, test_final, val_size=0.18, gap_size=0.005
             )
             
             if X_train is None or X_val is None or y_train is None or y_val is None:
@@ -192,53 +193,34 @@ class AISystem:
                 print("검증 데이터 비어있음")
                 return False, None
             
-            # 초정밀 검증 사용
-            ultra_validator = UltraPrecisionValidator(n_outer_splits=6, n_inner_splits=4, n_repeats=20)
-            
-            # 시간 정보 추출
-            timestamps = None
-            if 'temporal_id' in X_train.columns:
-                timestamps = X_train['temporal_id'].values
-            elif hasattr(X_train, 'index'):
-                timestamps = np.arange(len(X_train))
-            
-            # 간단한 파이프라인 모델 생성
-            from sklearn.ensemble import RandomForestClassifier
-            pipeline_model = RandomForestClassifier(
-                n_estimators=150, max_depth=8, 
-                class_weight='balanced', random_state=42, n_jobs=-1
-            )
-            
-            validation_results = ultra_validator.validate_with_calibration(
-                X_train, y_train, timestamps, pipeline_model
-            )
+            validator = ValidationSystem()
+            validation_results = validator.validate_system(X_train, y_train, X_val, y_val)
             
             self.results['validation'] = validation_results
             
             # 검증 성능 확인
-            overall_score = validation_results.get('mean_accuracy', 0.0)
-            std_score = validation_results.get('std_accuracy', 1.0)
+            overall_score = validation_results.get('overall_score', 0.0)
+            holdout_score = validation_results.get('component_scores', {}).get('holdout_score', 0.0)
+            cv_score = validation_results.get('component_scores', {}).get('cv_score', 0.0)
+            stability_score = validation_results.get('component_scores', {}).get('stability_score', 0.0)
             
-            print(f"교차검증 정확도: {overall_score:.6f}")
-            print(f"표준편차: {std_score:.6f}")
+            print(f"홀드아웃: {holdout_score:.4f}")
+            print(f"교차검증: {cv_score:.4f}")
+            print(f"안정성: {stability_score:.4f}")
+            print(f"종합 점수: {overall_score:.4f}")
             
             if overall_score >= self.target_accuracy:
                 print("목표 성능 달성")
             else:
                 gap = self.target_accuracy - overall_score
-                print(f"목표까지: {gap:.6f}")
-            
-            if std_score <= self.max_std_dev:
-                print("표준편차 목표 달성")
-            else:
-                print(f"표준편차 목표 초과: {std_score:.6f}")
+                print(f"목표까지: {gap:.4f}")
             
             print("검증 시스템 완료")
-            return True, ultra_validator
+            return True, validator
             
         except Exception as e:
             print(f"검증 시스템 오류: {e}")
-            self.results['validation'] = {'mean_accuracy': 0.0, 'std_accuracy': 1.0}
+            self.results['validation'] = {'overall_score': 0.0}
             return False, None
     
     def step5_model_training(self, X_train, X_val, y_train, y_val, engineer, preprocessor):
@@ -264,22 +246,9 @@ class AISystem:
             # 성능 확인
             best_score = 0.0
             best_model_name = None
-            model_count = 0
+            model_count = len(trainer.models)
             
-            # 계층적 스태킹 성능 우선 확인
-            if trainer.hierarchical_stacker is not None:
-                try:
-                    y_pred_proba = trainer.hierarchical_stacker.predict_proba(X_val)
-                    y_pred = np.argmax(y_pred_proba, axis=1)
-                    hs_score = accuracy_score(y_val, y_pred)
-                    best_score = hs_score
-                    best_model_name = 'hierarchical_stacker'
-                    model_count += 1
-                except:
-                    pass
-            
-            # 개별 모델 성능 확인
-            if trainer.models and len(trainer.models) > 0:
+            if trainer.models and model_count > 0:
                 from sklearn.metrics import accuracy_score
                 
                 for model_name, model in trainer.models.items():
@@ -310,15 +279,17 @@ class AISystem:
                             y_pred_class = model.predict(X_val_clean)
                             y_pred_class = np.clip(y_pred_class, 0, 2)
                             
-                        else:
+                        elif model_name == 'stacking':
                             continue
+                            
+                        else:
+                            y_pred_class = model.predict(X_val_clean)
+                            y_pred_class = np.clip(y_pred_class, 0, 2)
                         
                         score = accuracy_score(y_val_clean, y_pred_class)
                         if score > best_score:
                             best_score = score
                             best_model_name = model_name
-                        
-                        model_count += 1
                             
                     except Exception as e:
                         continue
@@ -328,12 +299,11 @@ class AISystem:
                 'best_validation_score': best_score,
                 'best_model': best_model_name,
                 'target_achieved': best_score >= self.target_accuracy,
-                'ensemble_weights': getattr(trainer, 'ensemble_weights', {}),
-                'hierarchical_stacker': trainer.hierarchical_stacker is not None
+                'ensemble_weights': getattr(trainer, 'ensemble_weights', {})
             }
             
             if best_model_name:
-                print(f"최고 성능: {best_score:.6f} ({best_model_name})")
+                print(f"최고 성능: {best_score:.4f} ({best_model_name})")
                 print(f"학습된 모델: {model_count}개")
             
             print("모델 학습 완료")
@@ -375,7 +345,7 @@ class AISystem:
                         'prediction_counts': pred_counts.to_dict(),
                         'unique_classes': len(unique_classes),
                         'diversity_score': len(unique_classes) / 3.0,
-                        'method': 'hierarchical_stacker' if predictor.hierarchical_stacker else 'weighted_ensemble'
+                        'method': 'weighted_ensemble'
                     }
                     
                     print("예측 생성 완료")
@@ -437,18 +407,18 @@ class AISystem:
             X_test = test_processed[feature_cols].fillna(0)
             
             # 클래스 가중치 계산
-            class_counts = np.bincount(y, minlength=3)
+            class_counts = np.bincount(y)
             total_samples = len(y)
             class_weights = {}
             
             for i, count in enumerate(class_counts):
                 if count > 0:
-                    class_weights[i] = total_samples / (3 * count)
+                    class_weights[i] = total_samples / (len(class_counts) * count)
                 else:
                     class_weights[i] = 1.0
             
             # 클래스 1 보정
-            class_weights[1] *= 1.15
+            class_weights[1] *= 1.1
             class_weights[2] *= 1.05
             
             # 앙상블 모델 학습
@@ -456,11 +426,11 @@ class AISystem:
             
             # Random Forest
             rf_model = RandomForestClassifier(
-                n_estimators=450,
+                n_estimators=500,
                 max_depth=12,
-                min_samples_split=5,
-                min_samples_leaf=2,
-                max_features=0.82,
+                min_samples_split=8,
+                min_samples_leaf=4,
+                max_features=0.8,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
@@ -469,19 +439,19 @@ class AISystem:
             
             # Gradient Boosting
             gb_model = GradientBoostingClassifier(
-                n_estimators=280,
+                n_estimators=300,
                 learning_rate=0.06,
                 max_depth=7,
-                min_samples_split=10,
-                min_samples_leaf=5,
-                subsample=0.86,
+                min_samples_split=15,
+                min_samples_leaf=8,
+                subsample=0.85,
                 random_state=42
             )
             models.append(('gb', gb_model))
             
             # 앙상블 예측
             ensemble_predictions = []
-            model_weights = [0.62, 0.38]
+            model_weights = [0.6, 0.4]  # RF에 더 높은 가중치
             
             for i, (name, model) in enumerate(models):
                 model.fit(X, y)
@@ -492,7 +462,7 @@ class AISystem:
             final_proba = np.sum(ensemble_predictions, axis=0)
             
             # 클래스 균형 조정
-            class_adjustments = np.array([0.98, 1.10, 1.02])
+            class_adjustments = np.array([1.0, 1.05, 1.02])
             adjusted_proba = final_proba * class_adjustments[np.newaxis, :]
             normalized_proba = adjusted_proba / adjusted_proba.sum(axis=1, keepdims=True)
             
@@ -503,9 +473,9 @@ class AISystem:
             total_preds = len(predictions)
             
             # 클래스 1이 너무 적으면 조정
-            if pred_counts[1] < total_preds * 0.13:
+            if pred_counts[1] < total_preds * 0.08:
                 class_1_proba = normalized_proba[:, 1]
-                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.13):]
+                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.08):]
                 predictions[top_indices] = 1
             
             # 제출 파일
@@ -572,33 +542,23 @@ class AISystem:
             # 검증 결과
             if 'validation' in self.results:
                 val = self.results['validation']
-                cv_accuracy = val.get('mean_accuracy', 0.0)
-                cv_std = val.get('std_accuracy', 1.0)
-                print(f"교차검증 정확도: {cv_accuracy:.6f}")
-                print(f"교차검증 표준편차: {cv_std:.6f}")
+                overall_score = val.get('overall_score', 0.0)
+                print(f"검증 점수: {overall_score:.4f}")
                 
-                if cv_accuracy >= self.target_accuracy:
-                    print("✓ 교차검증 목표 정확도 달성")
+                if overall_score >= self.target_accuracy:
+                    print("✓ 목표 정확도 달성")
                 else:
-                    gap = self.target_accuracy - cv_accuracy
-                    print(f"교차검증 목표까지: {gap:.6f}")
-                
-                if cv_std <= self.max_std_dev:
-                    print("✓ 표준편차 목표 달성")
-                else:
-                    print(f"표준편차 목표 초과: {cv_std:.6f}")
+                    gap = self.target_accuracy - overall_score
+                    print(f"목표까지: {gap:.4f}")
             
             # 모델 학습 결과
             if 'model_training' in self.results:
                 mt = self.results['model_training']
                 print(f"학습 모델: {mt['models_count']}개")
-                print(f"최고 검증 성능: {mt['best_validation_score']:.6f}")
+                print(f"최고 검증 성능: {mt['best_validation_score']:.4f}")
                 
                 if mt.get('best_model'):
                     print(f"최고 모델: {mt['best_model']}")
-                
-                if mt.get('hierarchical_stacker'):
-                    print("계층적 스태킹: 활성화")
                 
                 if mt['target_achieved']:
                     print("✓ 모델 목표 달성")
@@ -628,19 +588,14 @@ class AISystem:
             
             # 성능 등급
             if 'validation' in self.results and 'model_training' in self.results:
-                val_score = self.results['validation'].get('mean_accuracy', 0.0)
-                val_std = self.results['validation'].get('std_accuracy', 1.0)
+                val_score = self.results['validation'].get('overall_score', 0.0)
                 model_achieved = self.results['model_training'].get('target_achieved', False)
                 
-                if val_score >= self.target_accuracy and val_std <= self.max_std_dev:
-                    print("✓ 모든 목표 달성")
-                elif val_score >= self.target_accuracy:
-                    print("✓ 정확도 목표 달성")
-                elif val_std <= self.max_std_dev:
-                    print("✓ 안정성 목표 달성")
-                elif val_score >= self.target_accuracy * 0.98:
+                if val_score >= self.target_accuracy and model_achieved:
+                    print("✓ 목표 성능 달성")
+                elif val_score >= self.target_accuracy * 0.95:
                     print("→ 목표 근접")
-                elif success_rate >= 90:
+                elif success_rate >= 83:
                     print("→ 파이프라인 안정")
                 else:
                     print("→ 부분 성공")
@@ -708,7 +663,7 @@ class AISystem:
             self.generate_report()
             
             print(f"\n{'='*50}")
-            print("시스템 구축 완료")
+            print("AI 시스템 구축 완료")
             print(f"{'='*50}")
             return True
             

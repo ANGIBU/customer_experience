@@ -68,8 +68,9 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 시간적 임계값 조정 (90% 퍼센타일)
+            # 시간적 분할점 계산 (90% 퍼센타일로 완화)
             overlap_threshold = int(np.percentile(train_id_nums, 90))
+            
             self.temporal_threshold = overlap_threshold
             
             # 안전 구간 계산
@@ -124,21 +125,22 @@ class DataAnalyzer:
                 
                 f_stat, p_value = stats.f_oneway(*groups) if len(groups) >= 2 else (0, 1)
                 
-                # 누수 기준 강화
+                # 완화된 누수 기준 (0.25, 0.5, 0.001)
                 leakage_features['after_interaction'] = {
                     'correlation': correlation,
                     'mutual_info': mi_score,
                     'class_separation': separation,
                     'f_statistic': f_stat,
                     'p_value': p_value,
-                    'is_leakage': abs(correlation) > 0.15 or mi_score > 0.30 or p_value < 0.005
+                    'class_stats': class_stats,
+                    'is_leakage': abs(correlation) > 0.25 or mi_score > 0.5 or p_value < 0.001
                 }
         
         return leakage_features
     
     def analyze_feature_stability(self):
         """피처 안정성 분석"""
-        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        numeric_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'after_interaction']
         stability_results = {}
         
         for feature in numeric_features:

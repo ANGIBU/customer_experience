@@ -13,7 +13,6 @@ from sklearn.metrics import accuracy_score
 from sklearn.calibration import CalibratedClassifierCV
 from scipy.special import softmax
 from scipy.optimize import minimize
-from validation import DirichletCalibrator, OptimalThresholdFinder
 import joblib
 import warnings
 warnings.filterwarnings('ignore')
@@ -27,7 +26,6 @@ class PredictionSystem:
         self.feature_names = None
         self.class_weights = None
         self.ensemble_weights = None
-        self.hierarchical_stacker = None
         
     def safe_data_conversion(self, X, y=None):
         """안전한 데이터 변환"""
@@ -64,22 +62,23 @@ class PredictionSystem:
                 from feature_engineering import FeatureEngineer
                 self.feature_engineer = FeatureEngineer()
             
-            # 계층적 스태킹 로드
-            if os.path.exists('models/hierarchical_stacker.pkl'):
-                self.hierarchical_stacker = joblib.load('models/hierarchical_stacker.pkl')
-            
             # 피처 정보 로드
             if os.path.exists('models/feature_info.pkl'):
                 self.feature_info = joblib.load('models/feature_info.pkl')
                 self.feature_names = self.feature_info.get('feature_names', [])
-                self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 12.0, 2: 18.0})
+                self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 1.1, 2: 1.05})
                 self.ensemble_weights = self.feature_info.get('ensemble_weights', {})
             
             # 모델 파일 로드
             model_configs = [
                 ('lightgbm', 'models/lightgbm_model.txt', 'lgb'),
                 ('xgboost', 'models/xgboost_model.json', 'xgb'),
-                ('catboost', 'models/catboost_model.pkl', 'pkl')
+                ('catboost', 'models/catboost_model.pkl', 'pkl'),
+                ('random_forest', 'models/random_forest_model.pkl', 'pkl'),
+                ('gradient_boosting', 'models/gradient_boosting_model.pkl', 'pkl'),
+                ('extra_trees', 'models/extra_trees_model.pkl', 'pkl'),
+                ('neural_network', 'models/neural_network_model.pkl', 'pkl'),
+                ('stacking', 'models/stacking_model.pkl', 'pkl')
             ]
             
             loaded_count = 0
@@ -100,9 +99,7 @@ class PredictionSystem:
                     except Exception as e:
                         continue
             
-            print(f"로드된 모델 수: {loaded_count}")
-            
-            if loaded_count == 0 and self.hierarchical_stacker is None:
+            if loaded_count == 0:
                 return self.train_fallback_models()
             
             return True
@@ -117,21 +114,16 @@ class PredictionSystem:
             
             trainer = ModelTrainer()
             result = trainer.prepare_training_data()
+            trainer.train_models(result[0], result[1], result[2], result[3], result[6], result[7])
             
-            if result[0] is not None:
-                trainer.train_models(result[0], result[1], result[2], result[3], result[6], result[7])
-                
-                self.models = trainer.models.copy()
-                self.hierarchical_stacker = trainer.hierarchical_stacker
-                self.feature_engineer = result[6]
-                self.preprocessor = result[7]
-                self.feature_names = trainer.feature_names
-                self.class_weights = trainer.class_weights
-                self.ensemble_weights = trainer.ensemble_weights
-                
-                return len(self.models) > 0 or self.hierarchical_stacker is not None
+            self.models = trainer.models.copy()
+            self.feature_engineer = result[6]
+            self.preprocessor = result[7]
+            self.feature_names = trainer.feature_names
+            self.class_weights = trainer.class_weights
+            self.ensemble_weights = trainer.ensemble_weights
             
-            return False
+            return len(self.models) > 0
             
         except Exception as e:
             return False
@@ -180,7 +172,7 @@ class PredictionSystem:
     
     def predict_individual_models(self, X_test):
         """개별 모델 예측"""
-        model_predictions = {}
+        predictions = {}
         X_test_clean = self.safe_data_conversion(X_test)
         
         for name, model in self.models.items():
@@ -193,7 +185,7 @@ class PredictionSystem:
                         pred_proba_multi[:, 1] = pred_proba
                         pred_proba_multi[:, 0] = 1 - pred_proba
                         pred_proba = pred_proba_multi
-                    model_predictions[name] = pred_proba
+                    predictions[name] = pred_proba
                     
                 elif name == 'xgboost':
                     if self.feature_names is not None:
@@ -208,13 +200,48 @@ class PredictionSystem:
                         pred_proba_multi[:, 1] = pred_proba
                         pred_proba_multi[:, 0] = 1 - pred_proba
                         pred_proba = pred_proba_multi
-                    model_predictions[name] = pred_proba
+                    predictions[name] = pred_proba
+                    
+                elif name == 'stacking':
+                    # 스태킹 앙상블 처리
+                    if isinstance(model, dict):
+                        base_models = model.get('base_models', [])
+                        meta_model = model.get('meta_model')
+                        base_model_objects = model.get('base_model_objects', {})
+                        
+                        if meta_model and base_model_objects:
+                            # 베이스 모델 예측 수집
+                            base_predictions = []
+                            
+                            for base_name in base_models:
+                                if base_name in base_model_objects:
+                                    base_model = base_model_objects[base_name]
+                                    
+                                    if base_name == 'lightgbm':
+                                        base_pred = base_model.predict(X_test_clean)
+                                        if base_pred.ndim == 2 and base_pred.shape[1] == 3:
+                                            base_predictions.append(base_pred)
+                                    elif base_name == 'xgboost':
+                                        xgb_test = xgb.DMatrix(X_test_clean, feature_names=self.feature_names)
+                                        base_pred = base_model.predict(xgb_test)
+                                        if base_pred.ndim == 2 and base_pred.shape[1] == 3:
+                                            base_predictions.append(base_pred)
+                                    else:
+                                        if hasattr(base_model, 'predict_proba'):
+                                            base_pred = base_model.predict_proba(X_test_clean)
+                                            if base_pred.shape[1] == 3:
+                                                base_predictions.append(base_pred)
+                            
+                            if base_predictions:
+                                meta_X = np.hstack(base_predictions)
+                                pred_proba = meta_model.predict_proba(meta_X)
+                                predictions[name] = pred_proba
                     
                 else:
                     if hasattr(model, 'predict_proba'):
                         pred_proba = model.predict_proba(X_test_clean)
                         if pred_proba.shape[1] == 3:
-                            model_predictions[name] = pred_proba
+                            predictions[name] = pred_proba
                     else:
                         pred_class = model.predict(X_test_clean)
                         pred_proba = np.zeros((len(pred_class), 3))
@@ -223,27 +250,27 @@ class PredictionSystem:
                                 pred_proba[i, int(cls)] = 1.0
                             else:
                                 pred_proba[i] = [0.33, 0.34, 0.33]
-                        model_predictions[name] = pred_proba
+                        predictions[name] = pred_proba
                         
             except Exception as e:
                 continue
         
-        return model_predictions
+        return predictions
     
-    def create_ensemble_weights(self, model_predictions):
+    def create_ensemble_weights(self, predictions):
         """앙상블 가중치 생성"""
-        if not model_predictions or len(model_predictions) < 1:
+        if not predictions or len(predictions) < 2:
             return None
         
         # 저장된 가중치 사용
         if self.ensemble_weights:
             weights = {}
             total_weight = 0
-            for model_name in model_predictions.keys():
+            for model_name in predictions.keys():
                 if model_name in self.ensemble_weights:
                     weights[model_name] = self.ensemble_weights[model_name]
                 else:
-                    weights[model_name] = 0.1
+                    weights[model_name] = 0.1  # 기본 가중치
                 total_weight += weights[model_name]
             
             # 정규화
@@ -251,19 +278,20 @@ class PredictionSystem:
                 for model_name in weights:
                     weights[model_name] /= total_weight
             
-            print(f"앙상블 모델 수: {len(model_predictions)}")
-            print(f"앙상블 가중치: {weights}")
-            
             return weights
         
         # 기본 가중치
         default_weights = {
-            'lightgbm': 0.35,
-            'xgboost': 0.35,
-            'catboost': 0.30
+            'lightgbm': 0.28,
+            'xgboost': 0.25,
+            'catboost': 0.22,
+            'stacking': 0.15,
+            'random_forest': 0.06,
+            'gradient_boosting': 0.03,
+            'extra_trees': 0.01
         }
         
-        available_models = list(model_predictions.keys())
+        available_models = list(predictions.keys())
         weights = {}
         total_weight = 0
         
@@ -271,7 +299,7 @@ class PredictionSystem:
             if model_name in default_weights:
                 weights[model_name] = default_weights[model_name]
             else:
-                weights[model_name] = 0.1
+                weights[model_name] = 0.02
             total_weight += weights[model_name]
         
         # 정규화
@@ -279,27 +307,22 @@ class PredictionSystem:
             for model_name in weights:
                 weights[model_name] /= total_weight
         
-        print(f"앙상블 모델 수: {len(model_predictions)}")
-        print(f"앙상블 가중치: {weights}")
-        
         return weights
     
-    def weighted_ensemble_prediction(self, model_predictions):
+    def weighted_ensemble_prediction(self, predictions):
         """가중 앙상블 예측"""
-        if not model_predictions:
+        if not predictions:
             return None
         
-        weights = self.create_ensemble_weights(model_predictions)
+        weights = self.create_ensemble_weights(predictions)
         if not weights:
             return None
         
-        print("확률 보정 적용됨")
-        
         # 가중 평균
-        first_pred = list(model_predictions.values())[0]
+        first_pred = list(predictions.values())[0]
         ensemble_proba = np.zeros((first_pred.shape[0], 3))
         
-        for model_name, pred in model_predictions.items():
+        for model_name, pred in predictions.items():
             if model_name in weights and isinstance(pred, np.ndarray) and pred.ndim == 2 and pred.shape[1] == 3:
                 weight = weights[model_name]
                 ensemble_proba += weight * pred
@@ -311,20 +334,20 @@ class PredictionSystem:
         
         return ensemble_proba
     
-    def apply_dirichlet_calibration(self, pred_proba):
-        """Dirichlet 확률 보정"""
+    def apply_single_calibration(self, pred_proba):
+        """단일 확률 보정"""
         try:
-            # 로그 변환으로 수치적 안정성 확보
-            log_proba = np.log(pred_proba + 1e-10)
+            # Temperature scaling만 적용
+            temperature = 1.03
             
-            # 선형 보정
-            alpha = np.array([1.02, 0.98, 1.00])
-            beta = np.array([0.005, -0.010, 0.005])
+            # 로그 확률로 변환
+            log_proba = np.log(np.clip(pred_proba, 1e-7, 1-1e-7))
             
-            adjusted_log_proba = log_proba * alpha[np.newaxis, :] + beta[np.newaxis, :]
+            # Temperature scaling
+            scaled_log_proba = log_proba / temperature
             
             # Softmax 적용
-            calibrated_proba = softmax(adjusted_log_proba, axis=1)
+            calibrated_proba = softmax(scaled_log_proba, axis=1)
             
             return calibrated_proba
             
@@ -333,8 +356,8 @@ class PredictionSystem:
     
     def apply_class_adjustment(self, pred_proba):
         """클래스 균형 조정"""
-        # 클래스별 조정 계수
-        class_adjustments = np.array([1.0, 1.08, 1.02])
+        # 클래스별 조정 계수 (미세 조정)
+        class_adjustments = np.array([1.0, 1.03, 1.01])
         
         adjusted_proba = pred_proba * class_adjustments[np.newaxis, :]
         
@@ -346,71 +369,36 @@ class PredictionSystem:
     
     def generate_predictions(self, X_test, test_ids):
         """예측 생성"""
-        print("예측 생성 시작...")
+        # 개별 모델 예측
+        individual_predictions = self.predict_individual_models(X_test)
         
-        # 계층적 스태킹 우선 사용
-        if self.hierarchical_stacker is not None:
-            try:
-                print("계층적 스태킹 사용")
-                ensemble_proba = self.hierarchical_stacker.predict_proba(X_test)
-                print("계층적 스태킹 예측 완료")
-            except Exception as e:
-                print(f"계층적 스태킹 실패: {e}")
-                ensemble_proba = None
-        else:
-            ensemble_proba = None
+        if not individual_predictions:
+            return self.create_fallback_predictions(X_test, test_ids)
         
-        # 개별 모델 앙상블
+        # 가중 앙상블
+        ensemble_proba = self.weighted_ensemble_prediction(individual_predictions)
+        
         if ensemble_proba is None:
-            model_predictions = self.predict_individual_models(X_test)
-            print(f"개별 모델 예측 완료: {len(model_predictions)}개 모델")
-            
-            if not model_predictions:
-                return self.create_fallback_predictions(X_test, test_ids)
-            
-            # 가중 앙상블
-            ensemble_proba = self.weighted_ensemble_prediction(model_predictions)
-            
-            if ensemble_proba is None:
-                return self.create_fallback_predictions(X_test, test_ids)
-            
-            print("앙상블 예측 완료")
+            return self.create_fallback_predictions(X_test, test_ids)
         
-        # Dirichlet 확률 보정
-        calibrated_proba = self.apply_dirichlet_calibration(ensemble_proba)
-        print("확률 보정 완료")
+        # 단일 확률 보정
+        calibrated_proba = self.apply_single_calibration(ensemble_proba)
         
         # 클래스 균형 조정
         final_proba = self.apply_class_adjustment(calibrated_proba)
-        print("클래스 균형 조정 완료")
         
         # 최종 예측
         predictions = np.argmax(final_proba, axis=1)
         
-        # 예측 후처리
+        # 예측 후처리 (극단적 불균형 방지)
         pred_counts = np.bincount(predictions, minlength=3)
         total_preds = len(predictions)
         
-        print(f"후처리 전 분포 - 0: {pred_counts[0]}, 1: {pred_counts[1]}, 2: {pred_counts[2]}")
-        
-        # 클래스 분포 조정
         # 클래스 1이 너무 적으면 조정
-        if pred_counts[1] < total_preds * 0.10:
+        if pred_counts[1] < total_preds * 0.08:
             class_1_proba = final_proba[:, 1]
-            top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.10):]
+            top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.08):]
             predictions[top_indices] = 1
-            print("클래스 1 조정 적용됨")
-        
-        # 클래스 2가 너무 많으면 조정
-        if pred_counts[2] > total_preds * 0.45:
-            class_2_proba = final_proba[:, 2]
-            bottom_indices = np.argsort(class_2_proba)[:int(pred_counts[2] - total_preds * 0.42)]
-            predictions[bottom_indices] = 0
-            print("클래스 2 조정 적용됨")
-        
-        # 최종 분포 확인
-        final_counts = np.bincount(predictions, minlength=3)
-        print(f"후처리 후 분포 - 0: {final_counts[0]}, 1: {final_counts[1]}, 2: {final_counts[2]}")
         
         # 제출 파일 생성
         submission_df = pd.DataFrame({
@@ -419,7 +407,6 @@ class PredictionSystem:
         })
         
         submission_df.to_csv('submission.csv', index=False)
-        print("submission.csv 저장 완료")
         
         return submission_df
     
@@ -449,118 +436,66 @@ class PredictionSystem:
                     train_processed[col] = le.transform(train_df[col].fillna('Unknown'))
                     test_processed[col] = le.transform(test_df[col].fillna('Unknown'))
             
-            # 추가 피처 생성
-            if all(col in train_processed.columns for col in ['age', 'tenure']):
-                train_processed['age_tenure_ratio'] = train_processed['age'] / (train_processed['tenure'] + 1)
-                test_processed['age_tenure_ratio'] = test_processed['age'] / (test_processed['tenure'] + 1)
-            
-            if all(col in train_processed.columns for col in ['frequent', 'payment_interval']):
-                train_processed['frequency_payment_ratio'] = train_processed['frequent'] / (train_processed['payment_interval'] + 1)
-                test_processed['frequency_payment_ratio'] = test_processed['frequent'] / (test_processed['payment_interval'] + 1)
-            
             # 피처 선택
-            feature_cols = numeric_cols + categorical_cols + ['age_tenure_ratio', 'frequency_payment_ratio']
+            feature_cols = numeric_cols + categorical_cols
             feature_cols = [col for col in feature_cols if col in train_processed.columns and col in test_processed.columns]
             
-            X = train_processed[feature_cols].fillna(0)
-            y = train_processed['support_needs']
+            X_train = train_processed[feature_cols].fillna(0)
+            y_train = train_processed['support_needs']
             X_test_simple = test_processed[feature_cols].fillna(0)
             
-            # 클래스 가중치 계산
-            class_counts = np.bincount(y, minlength=3)
-            total_samples = len(y)
-            class_weights = {}
+            # 클래스 가중치
+            if self.class_weights:
+                class_weights = self.class_weights
+            else:
+                class_counts = np.bincount(y_train)
+                total_samples = len(y_train)
+                class_weights = {}
+                
+                for i, count in enumerate(class_counts):
+                    if count > 0:
+                        class_weights[i] = total_samples / (len(class_counts) * count)
+                    else:
+                        class_weights[i] = 1.0
+                
+                class_weights[1] *= 1.1
             
-            for i, count in enumerate(class_counts):
-                if count > 0:
-                    class_weights[i] = total_samples / (3 * count)
-                else:
-                    class_weights[i] = 1.0
-            
-            # 클래스 1 보정
-            class_weights[1] *= 1.2
-            class_weights[2] *= 1.05
-            
-            # 앙상블 모델 학습
-            models = []
-            
-            # Random Forest
-            rf_model = RandomForestClassifier(
+            # 모델 학습
+            model = RandomForestClassifier(
                 n_estimators=400,
-                max_depth=12,
-                min_samples_split=5,
-                min_samples_leaf=2,
-                max_features=0.8,
+                max_depth=11,
+                min_samples_split=8,
+                min_samples_leaf=4,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
             )
-            models.append(('rf', rf_model))
             
-            # Gradient Boosting
-            gb_model = GradientBoostingClassifier(
-                n_estimators=250,
-                learning_rate=0.06,
-                max_depth=7,
-                min_samples_split=10,
-                min_samples_leaf=5,
-                subsample=0.85,
-                random_state=42
-            )
-            models.append(('gb', gb_model))
+            model.fit(X_train, y_train)
             
-            # 앙상블 예측
-            ensemble_predictions = []
-            model_weights = [0.6, 0.4]  # RF에 더 높은 가중치
+            # 예측
+            pred_proba = model.predict_proba(X_test_simple)
             
-            for i, (name, model) in enumerate(models):
-                model.fit(X, y)
-                pred_proba = model.predict_proba(X_test_simple)
-                ensemble_predictions.append(pred_proba * model_weights[i])
+            # 확률 보정
+            calibrated_proba = self.apply_minimal_calibration(pred_proba)
+            calibrated_proba = self.apply_micro_adjustment(calibrated_proba)
             
-            # 가중 평균
-            final_proba = np.sum(ensemble_predictions, axis=0)
-            
-            # 클래스 균형 조정
-            class_adjustments = np.array([0.98, 1.12, 1.02])
-            adjusted_proba = final_proba * class_adjustments[np.newaxis, :]
-            normalized_proba = adjusted_proba / adjusted_proba.sum(axis=1, keepdims=True)
-            
-            predictions = np.argmax(normalized_proba, axis=1)
-            
-            # 분포 후처리
-            pred_counts = np.bincount(predictions, minlength=3)
-            total_preds = len(predictions)
-            
-            # 클래스 1이 너무 적으면 조정
-            if pred_counts[1] < total_preds * 0.14:
-                class_1_proba = normalized_proba[:, 1]
-                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.14):]
-                predictions[top_indices] = 1
+            predictions = np.argmax(calibrated_proba, axis=1)
             
             # 제출 파일
             submission_df = pd.DataFrame({
-                'ID': test_processed['ID'],
+                'ID': test_ids,
                 'support_needs': predictions.astype(int)
             })
             
             submission_df.to_csv('submission.csv', index=False)
             
-            # 분포 출력
-            final_counts = submission_df['support_needs'].value_counts().sort_index()
-            print("대체 예측 분포:")
-            for cls in [0, 1, 2]:
-                count = final_counts.get(cls, 0)
-                pct = count / len(submission_df) * 100
-                print(f"클래스 {cls}: {count:,}개 ({pct:.1f}%)")
-            
-            print("대체 예측 완료")
             return submission_df
             
         except Exception as e:
             # 최종 대체 (랜덤 예측)
             np.random.seed(42)
-            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.40, 0.30, 0.30])
+            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.45, 0.35, 0.20])
             
             submission_df = pd.DataFrame({
                 'ID': test_ids,
@@ -609,7 +544,7 @@ class PredictionSystem:
             return None
         
         # 예측 수행
-        if self.models or self.hierarchical_stacker is not None:
+        if self.models:
             try:
                 submission_df = self.generate_predictions(X_test, test_ids)
             except Exception as e:
