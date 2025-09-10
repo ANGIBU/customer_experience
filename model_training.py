@@ -41,9 +41,10 @@ class ModelTrainer:
             else:
                 weights[i] = 1.0
         
-        # 클래스 1에 대한 보정
-        weights[1] *= 1.1
-        weights[2] *= 1.05
+        # 분포 불균형 보정
+        weights[0] *= 1.28
+        weights[1] *= 1.05
+        weights[2] *= 0.85
         
         self.class_weights = weights
         return weights
@@ -73,7 +74,6 @@ class ModelTrainer:
             train_df = pd.read_csv('train.csv')
             test_df = pd.read_csv('test.csv')
             
-            # 데이터 분석으로부터 temporal_threshold 가져오기
             try:
                 from data_analysis import DataAnalyzer
                 analyzer = DataAnalyzer()
@@ -119,15 +119,15 @@ class ModelTrainer:
             'num_class': 3,
             'metric': 'multi_logloss',
             'boosting_type': 'gbdt',
-            'num_leaves': 40,
-            'learning_rate': 0.03,
-            'feature_fraction': 0.8,
-            'bagging_fraction': 0.85,
+            'num_leaves': 38,
+            'learning_rate': 0.028,
+            'feature_fraction': 0.82,
+            'bagging_fraction': 0.87,
             'bagging_freq': 5,
-            'min_child_weight': 8,
-            'min_split_gain': 0.1,
-            'reg_alpha': 0.1,
-            'reg_lambda': 0.1,
+            'min_child_weight': 6,
+            'min_split_gain': 0.08,
+            'reg_alpha': 0.08,
+            'reg_lambda': 0.12,
             'max_depth': 7,
             'verbose': -1,
             'random_state': 42,
@@ -137,7 +137,6 @@ class ModelTrainer:
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        # 클래스 가중치만 적용 (SMOTE 제거)
         sample_weight = np.ones(len(y_train_clean))
         for i, weight in self.class_weights.items():
             mask = y_train_clean == i
@@ -150,8 +149,8 @@ class ModelTrainer:
             lgb_params,
             train_data,
             valid_sets=[val_data],
-            num_boost_round=1800,
-            callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)]
+            num_boost_round=1900,
+            callbacks=[lgb.early_stopping(120), lgb.log_evaluation(0)]
         )
         
         y_pred = model.predict(X_val_clean)
@@ -168,13 +167,13 @@ class ModelTrainer:
             'num_class': 3,
             'eval_metric': 'mlogloss',
             'max_depth': 6,
-            'learning_rate': 0.03,
-            'subsample': 0.85,
-            'colsample_bytree': 0.8,
-            'reg_alpha': 0.1,
-            'reg_lambda': 0.1,
-            'min_child_weight': 8,
-            'gamma': 0.1,
+            'learning_rate': 0.028,
+            'subsample': 0.87,
+            'colsample_bytree': 0.82,
+            'reg_alpha': 0.08,
+            'reg_lambda': 0.12,
+            'min_child_weight': 6,
+            'gamma': 0.08,
             'random_state': 42,
             'verbosity': 0,
             'tree_method': 'hist'
@@ -183,7 +182,6 @@ class ModelTrainer:
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        # 클래스 가중치 적용
         sample_weight = np.ones(len(y_train_clean))
         for i, weight in self.class_weights.items():
             mask = y_train_clean == i
@@ -195,9 +193,9 @@ class ModelTrainer:
         model = xgb.train(
             params,
             train_data,
-            num_boost_round=1800,
+            num_boost_round=1900,
             evals=[(val_data, 'eval')],
-            early_stopping_rounds=100,
+            early_stopping_rounds=120,
             verbose_eval=0
         )
         
@@ -213,23 +211,22 @@ class ModelTrainer:
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        # 클래스 가중치 적용
         sample_weight = np.ones(len(y_train_clean))
         for i, weight in self.class_weights.items():
             mask = y_train_clean == i
             sample_weight[mask] = weight
         
         model = CatBoostClassifier(
-            iterations=1800,
-            learning_rate=0.03,
+            iterations=1900,
+            learning_rate=0.028,
             depth=6,
-            l2_leaf_reg=3,
+            l2_leaf_reg=2.5,
             bootstrap_type='Bernoulli',
-            subsample=0.8,
-            colsample_bylevel=0.8,
+            subsample=0.82,
+            colsample_bylevel=0.82,
             random_seed=42,
             verbose=0,
-            early_stopping_rounds=100,
+            early_stopping_rounds=120,
             task_type='CPU',
             thread_count=-1
         )
@@ -254,11 +251,11 @@ class ModelTrainer:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = RandomForestClassifier(
-            n_estimators=400,
-            max_depth=11,
-            min_samples_split=8,
-            min_samples_leaf=4,
-            max_features=0.75,
+            n_estimators=450,
+            max_depth=12,
+            min_samples_split=6,
+            min_samples_leaf=3,
+            max_features=0.78,
             bootstrap=True,
             class_weight=self.class_weights,
             random_state=42,
@@ -279,16 +276,15 @@ class ModelTrainer:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = GradientBoostingClassifier(
-            n_estimators=250,
-            learning_rate=0.06,
+            n_estimators=280,
+            learning_rate=0.055,
             max_depth=6,
-            min_samples_split=15,
-            min_samples_leaf=8,
-            subsample=0.85,
+            min_samples_split=12,
+            min_samples_leaf=6,
+            subsample=0.87,
             random_state=42
         )
         
-        # 클래스 가중치를 sample_weight으로 변환
         sample_weight = np.ones(len(y_train_clean))
         for i, weight in self.class_weights.items():
             mask = y_train_clean == i
@@ -308,11 +304,11 @@ class ModelTrainer:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = ExtraTreesClassifier(
-            n_estimators=350,
-            max_depth=11,
-            min_samples_split=6,
-            min_samples_leaf=3,
-            max_features=0.8,
+            n_estimators=380,
+            max_depth=12,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            max_features=0.82,
             bootstrap=True,
             class_weight=self.class_weights,
             random_state=42,
@@ -333,17 +329,17 @@ class ModelTrainer:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = MLPClassifier(
-            hidden_layer_sizes=(150, 75),
+            hidden_layer_sizes=(160, 80, 40),
             activation='relu',
             solver='adam',
-            alpha=0.001,
+            alpha=0.0008,
             learning_rate='adaptive',
-            learning_rate_init=0.001,
-            max_iter=1500,
+            learning_rate_init=0.0008,
+            max_iter=1800,
             random_state=42,
             early_stopping=True,
             validation_fraction=0.1,
-            n_iter_no_change=30
+            n_iter_no_change=35
         )
         
         model.fit(X_train_clean, y_train_clean)
@@ -365,7 +361,6 @@ class ModelTrainer:
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        # 메타 피처 생성 (3-fold CV)
         skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
         meta_features_train = np.zeros((len(X_train_clean), len(available_models) * 3))
         meta_features_val = np.zeros((len(X_val_clean), len(available_models) * 3))
@@ -373,13 +368,11 @@ class ModelTrainer:
         for model_idx, model_name in enumerate(available_models):
             model = self.models[model_name]
             
-            # 교차 검증으로 메타 피처 생성
             for fold_idx, (fold_train_idx, fold_val_idx) in enumerate(skf.split(X_train_clean, y_train_clean)):
                 X_fold_train = X_train_clean[fold_train_idx]
                 y_fold_train = y_train_clean[fold_train_idx]
                 X_fold_val = X_train_clean[fold_val_idx]
                 
-                # 임시 모델 학습
                 if model_name == 'lightgbm':
                     temp_model = lgb.LGBMClassifier(random_state=42, verbose=-1, n_estimators=150)
                 elif model_name == 'xgboost':
@@ -396,8 +389,7 @@ class ModelTrainer:
                 if hasattr(temp_model, 'predict_proba'):
                     fold_pred = temp_model.predict_proba(X_fold_val)
                     meta_features_train[fold_val_idx, model_idx*3:(model_idx+1)*3] = fold_pred
-                
-            # 검증 데이터에 대한 예측
+            
             if model_name == 'lightgbm':
                 val_pred = model.predict(X_val_clean)
                 if val_pred.ndim == 2 and val_pred.shape[1] == 3:
@@ -415,11 +407,10 @@ class ModelTrainer:
                     if val_pred.shape[1] == 3:
                         meta_features_val[:, model_idx*3:(model_idx+1)*3] = val_pred
         
-        # 메타 모델 학습
         meta_model = LogisticRegression(
             class_weight=self.class_weights,
             random_state=42,
-            max_iter=1500,
+            max_iter=1800,
             solver='liblinear'
         )
         
@@ -440,7 +431,6 @@ class ModelTrainer:
         """앙상블 가중치 최적화"""
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
-        # 각 모델의 성능 평가
         model_scores = {}
         
         for name, model in self.models.items():
@@ -469,20 +459,17 @@ class ModelTrainer:
                 accuracy = accuracy_score(y_val_clean, y_pred)
                 f1 = f1_score(y_val_clean, y_pred, average='macro')
                 
-                # 성능 점수 (accuracy와 f1의 가중 평균)
-                combined_score = 0.7 * accuracy + 0.3 * f1
+                combined_score = 0.75 * accuracy + 0.25 * f1
                 model_scores[name] = combined_score
                 
             except Exception as e:
                 model_scores[name] = 0.0
         
-        # 가중치 정규화
         total_score = sum(model_scores.values())
         if total_score > 0:
             for name in model_scores:
                 self.ensemble_weights[name] = model_scores[name] / total_score
         else:
-            # 균등 가중치
             num_models = len(model_scores)
             for name in model_scores:
                 self.ensemble_weights[name] = 1.0 / num_models
@@ -493,11 +480,9 @@ class ModelTrainer:
         """모델 저장"""
         os.makedirs('models', exist_ok=True)
         
-        # 전처리기 저장
         joblib.dump(preprocessor, 'models/preprocessor.pkl')
         joblib.dump(engineer, 'models/feature_engineer.pkl')
         
-        # 피처 정보 저장
         feature_info = {
             'feature_names': self.feature_names,
             'feature_count': len(self.feature_names),
@@ -506,7 +491,6 @@ class ModelTrainer:
         }
         joblib.dump(feature_info, 'models/feature_info.pkl')
         
-        # 모델 저장
         saved_count = 0
         for name, model in self.models.items():
             try:
@@ -537,59 +521,50 @@ class ModelTrainer:
         
         model_results = {}
         
-        # LightGBM
         try:
             lgb_model, lgb_acc = self.train_lightgbm(X_train, y_train, X_val, y_val)
             model_results['lightgbm'] = lgb_acc
         except Exception:
             model_results['lightgbm'] = 0.0
         
-        # XGBoost
         try:
             xgb_model, xgb_acc = self.train_xgboost(X_train, y_train, X_val, y_val)
             model_results['xgboost'] = xgb_acc
         except Exception:
             model_results['xgboost'] = 0.0
         
-        # CatBoost
         try:
             cat_model, cat_acc = self.train_catboost(X_train, y_train, X_val, y_val)
             model_results['catboost'] = cat_acc
         except Exception:
             model_results['catboost'] = 0.0
         
-        # Random Forest
         try:
             rf_model, rf_acc = self.train_random_forest(X_train, y_train, X_val, y_val)
             model_results['random_forest'] = rf_acc
         except Exception:
             model_results['random_forest'] = 0.0
         
-        # Gradient Boosting
         try:
             gb_model, gb_acc = self.train_gradient_boosting(X_train, y_train, X_val, y_val)
             model_results['gradient_boosting'] = gb_acc
         except Exception:
             model_results['gradient_boosting'] = 0.0
         
-        # Extra Trees
         try:
             et_model, et_acc = self.train_extra_trees(X_train, y_train, X_val, y_val)
             model_results['extra_trees'] = et_acc
         except Exception:
             model_results['extra_trees'] = 0.0
         
-        # Neural Network
         try:
             nn_model, nn_acc = self.train_neural_network(X_train, y_train, X_val, y_val)
             model_results['neural_network'] = nn_acc
         except Exception:
             model_results['neural_network'] = 0.0
         
-        # 앙상블 가중치 최적화
         self.optimize_ensemble_weights(X_val, y_val)
         
-        # 스태킹 앙상블
         try:
             stacking_model, stacking_acc = self.create_stacking_ensemble(X_train, y_train, X_val, y_val)
             if stacking_model is not None:
@@ -597,10 +572,8 @@ class ModelTrainer:
         except Exception:
             pass
         
-        # 모델 저장
         self.save_models(engineer, preprocessor)
         
-        # 결과 출력
         valid_results = {k: v for k, v in model_results.items() if v > 0}
         
         if valid_results:
@@ -611,7 +584,7 @@ def main():
         trainer = ModelTrainer()
         result = trainer.prepare_training_data()
         
-        if result[0] is not None:  # X_train이 None이 아니면
+        if result[0] is not None:
             X_train, X_val, y_train, y_val, X_test, test_ids, engineer, preprocessor = result
             trainer.train_models(X_train, X_val, y_train, y_val, engineer, preprocessor)
             return trainer
