@@ -1,11 +1,11 @@
 # main.py
 
 import os
-import sys 
+import sys
 import time
 import pandas as pd
 import numpy as np
-import warnings 
+import warnings
 warnings.filterwarnings('ignore')
 
 from data_analysis import DataAnalyzer
@@ -153,7 +153,7 @@ class AISystem:
             
             # 시간 기반 분할
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_optimized(
-                train_final, test_final, val_size=0.182, gap_size=0.007
+                train_final, test_final, val_size=0.18, gap_size=0.005
             )
             
             if X_train is None or X_val is None or y_train is None or y_val is None:
@@ -417,8 +417,8 @@ class AISystem:
                     class_weights[i] = 1.0
             
             # 클래스 1 보정
-            class_weights[1] *= 1.1
-            class_weights[2] *= 1.05
+            class_weights[1] *= 1.102
+            class_weights[2] *= 1.051
             
             # 앙상블 모델 학습
             models = []
@@ -461,7 +461,7 @@ class AISystem:
             final_proba = np.sum(ensemble_predictions, axis=0)
             
             # 클래스 균형 조정
-            class_adjustments = np.array([1.0, 1.05, 1.02])
+            class_adjustments = np.array([1.0, 1.03, 1.01])
             adjusted_proba = final_proba * class_adjustments[np.newaxis, :]
             normalized_proba = adjusted_proba / adjusted_proba.sum(axis=1, keepdims=True)
             
@@ -474,7 +474,7 @@ class AISystem:
             # 클래스 1이 너무 적으면 조정
             if pred_counts[1] < total_preds * 0.08:
                 class_1_proba = normalized_proba[:, 1]
-                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.08):]
+                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.082):]
                 predictions[top_indices] = 1
             
             # 제출 파일
