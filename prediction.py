@@ -357,8 +357,8 @@ class PredictionSystem:
     
     def apply_class_adjustment(self, pred_proba):
         """클래스 균형 조정"""
-        # 클래스별 조정 계수 미세 조정
-        class_adjustments = np.array([1.0, 1.048, 1.024])
+        # 클래스별 조정 계수
+        class_adjustments = np.array([1.0, 1.03, 1.01])
         
         adjusted_proba = pred_proba * class_adjustments[np.newaxis, :]
         

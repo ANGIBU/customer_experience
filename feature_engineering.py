@@ -372,7 +372,7 @@ class FeatureEngineer:
         
         return train_new, test_new
     
-    def select_features(self, train_df, target_col='support_needs', max_features=68):
+    def select_features(self, train_df, target_col='support_needs', max_features=65):
         """피처 선택"""
         if target_col not in train_df.columns:
             feature_cols = [col for col in train_df.columns if col not in ['ID']]

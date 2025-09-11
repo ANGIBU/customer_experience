@@ -357,7 +357,7 @@ class DataPreprocessor:
         
         # 피처 선택
         if 'support_needs' in train_df.columns:
-            selected_features = self.select_features_optimized(train_df, max_features=68)
+            selected_features = self.select_features_optimized(train_df, max_features=65)
             
             keep_cols_train = ['ID', 'support_needs'] + selected_features
             keep_cols_test = ['ID'] + [f for f in selected_features if f in test_df.columns]
