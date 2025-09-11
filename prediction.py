@@ -483,8 +483,8 @@ class PredictionSystem:
                     else:
                         class_weights[i] = 1.0
                 
-                class_weights[1] *= 1.12
-                class_weights[2] *= 1.08
+                class_weights[1] *= 1.108
+                class_weights[2] *= 1.054
             
             # 모델 학습
             model = RandomForestClassifier(

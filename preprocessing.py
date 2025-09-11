@@ -377,7 +377,7 @@ class DataPreprocessor:
         
         return train_df, test_df
     
-    def prepare_data_temporal_optimized(self, train_df, test_df, val_size=0.175, gap_size=0.008):
+    def prepare_data_temporal_optimized(self, train_df, test_df, val_size=0.178, gap_size=0.009):
         """시간 기반 데이터 준비"""
         if train_df is None or test_df is None:
             return None, None, None, None, None, None

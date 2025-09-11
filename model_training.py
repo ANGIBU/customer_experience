@@ -470,7 +470,7 @@ class ModelTrainer:
                 f1 = f1_score(y_val_clean, y_pred, average='macro')
                 
                 # 성능 점수 (accuracy와 f1의 가중 평균)
-                combined_score = 0.72 * accuracy + 0.28 * f1
+                combined_score = 0.71 * accuracy + 0.29 * f1
                 model_scores[name] = combined_score
                 
             except Exception as e:
