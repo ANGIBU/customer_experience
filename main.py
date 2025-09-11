@@ -153,7 +153,7 @@ class AISystem:
             
             # 시간 기반 분할
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_optimized(
-                train_final, test_final, val_size=0.18, gap_size=0.005
+                train_final, test_final, val_size=0.182, gap_size=0.007
             )
             
             if X_train is None or X_val is None or y_train is None or y_val is None:

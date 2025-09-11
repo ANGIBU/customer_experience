@@ -478,13 +478,13 @@ class ModelTrainer:
         
         # 정밀한 가중치 분배
         base_weights = {
-            'lightgbm': 0.28,
-            'xgboost': 0.25,
-            'catboost': 0.22,
-            'random_forest': 0.15,
-            'gradient_boosting': 0.06,
-            'extra_trees': 0.03,
-            'neural_network': 0.01
+            'lightgbm': 0.285,
+            'xgboost': 0.255,
+            'catboost': 0.218,
+            'random_forest': 0.145,
+            'gradient_boosting': 0.062,
+            'extra_trees': 0.028,
+            'neural_network': 0.007
         }
         
         # 성능 기반 조정
