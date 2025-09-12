@@ -305,7 +305,7 @@ class ModelTrainer:
             verbose=0,
             early_stopping_rounds=120,
             task_type='CPU',
-            thread_count=-1
+            thread_count=1
         )
         
         model.fit(

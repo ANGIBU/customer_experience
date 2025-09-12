@@ -134,7 +134,7 @@ class ValidationSystem:
             max_features=0.7,
             class_weight=class_weights,
             random_state=44,
-            n_jobs=-1
+            n_jobs=1
         )
         models.append(('rf_wide', rf_wide))
         

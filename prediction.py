@@ -749,7 +749,7 @@ class PredictionSystem:
                 min_samples_leaf=2,
                 class_weight=class_weights,
                 random_state=42,
-                n_jobs=-1
+                n_jobs=1
             )
             
             model.fit(X_train, y_train)
