@@ -49,15 +49,15 @@ class DataPreprocessor:
         safe_mask = train_df['temporal_id'] <= threshold
         safe_data = train_df[safe_mask].copy()
         
-        # 최소 데이터 보장
-        if len(safe_data) < len(train_df) * 0.3:  # 30% 미만이면 50% 지점으로 조정
-            percentile_50 = np.percentile(train_df['temporal_id'], 50)
-            safe_mask = train_df['temporal_id'] <= percentile_50
+        # 균형잡힌 데이터 보존 (성능과 안전성 균형)
+        if len(safe_data) < len(train_df) * 0.6:  # 60% 미만이면 70% 지점으로 조정
+            percentile_70 = np.percentile(train_df['temporal_id'], 70)
+            safe_mask = train_df['temporal_id'] <= percentile_70
             safe_data = train_df[safe_mask].copy()
         
         print(f"시간적 필터링: {len(train_df)} → {len(safe_data)} ({len(safe_data)/len(train_df):.1%})")
         
-        return safe_data if len(safe_data) > 5000 else train_df
+        return safe_data if len(safe_data) > 8000 else train_df
     
     def detect_outliers_simple(self, train_df):
         """단순한 이상치 탐지"""
@@ -133,7 +133,7 @@ class DataPreprocessor:
         
         return train_clean, test_clean
     
-    def select_features_simple(self, train_df, max_features=50):  # 75 → 50으로 축소
+    def select_features_simple(self, train_df, max_features=65):  # 50 → 65으로 증가
         """단순한 피처 선택"""
         if 'support_needs' not in train_df.columns:
             feature_cols = [col for col in train_df.columns if col not in ['ID']]

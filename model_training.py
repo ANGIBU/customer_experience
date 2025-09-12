@@ -39,9 +39,9 @@ class ModelTrainer:
             else:
                 weights[i] = 1.0
         
-        # 클래스 불균형 보정
-        weights[1] *= 1.15
-        weights[2] *= 1.09
+        # 클래스 불균형 보정 강화
+        weights[1] *= 1.25  # 1.15 → 1.25
+        weights[2] *= 1.15  # 1.09 → 1.15
         
         self.class_weights = weights
         return weights
