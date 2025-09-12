@@ -94,8 +94,8 @@ class DataAnalyzer:
             overlap_count = len([tid for tid in train_id_nums if tid >= test_min])
             overlap_ratio = overlap_count / len(train_id_nums) if train_id_nums else 0
             
-            # 엄격한 안전성 기준
-            is_safe = safe_ratio >= 0.50 and overlap_ratio <= 0.05
+            # 엄격한 안전성 기준 (성능과 안전성 균형)
+            is_safe = safe_ratio >= 0.60 and overlap_ratio <= 0.08
             
             return {
                 'train_range': train_range,

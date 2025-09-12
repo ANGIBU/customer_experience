@@ -36,21 +36,20 @@ class DataPreprocessor:
         return df_clean
         
     def apply_temporal_filtering(self, train_df, temporal_info=None):
-        """엄격한 시간적 필터링"""
-        if temporal_info is None or 'temporal_threshold' not in temporal_info:
+        """시간적 필터링"""
+        if temporal_info is None:
             return train_df
         
-        threshold = temporal_info['temporal_threshold']
-        
-        if 'temporal_id' not in train_df.columns:
+        temporal_threshold = temporal_info.get('temporal_threshold')
+        if temporal_threshold is None or 'temporal_id' not in train_df.columns:
             return train_df
         
-        # 매우 엄격한 필터링
-        safe_mask = train_df['temporal_id'] <= threshold
+        # temporal_threshold 기반 필터링
+        safe_mask = train_df['temporal_id'] <= temporal_threshold
         safe_data = train_df[safe_mask].copy()
         
-        # 균형잡힌 데이터 보존 (성능과 안전성 균형)
-        if len(safe_data) < len(train_df) * 0.6:  # 60% 미만이면 70% 지점으로 조정
+        # 데이터 품질 확인
+        if len(safe_data) < len(train_df) * 0.6:
             percentile_70 = np.percentile(train_df['temporal_id'], 70)
             safe_mask = train_df['temporal_id'] <= percentile_70
             safe_data = train_df[safe_mask].copy()

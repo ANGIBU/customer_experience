@@ -492,11 +492,11 @@ class AISystem:
                     if is_safe:
                         print(f"  ✓ 시간적 누수: 안전 ({safe_ratio:.1%})")
                     else:
-                        print(f"  ⚠ 시간적 누수: 엄격한 보정 적용 ({safe_ratio:.1%})")
+                        print(f"  ⚠ 시간적 누수: 보정 적용 ({safe_ratio:.1%})")
                 
                 leakage = da.get('leakage', {})
                 if 'after_interaction' in leakage:
-                    print("  ✓ 피처 누수: 완전 제거 및 안전 처리")
+                    print("  ✓ 피처 누수: 완전 제거 처리")
                 
                 integrity = da.get('integrity', {})
                 if integrity.get('passed', True):
