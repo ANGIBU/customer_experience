@@ -41,53 +41,146 @@ class FeatureEngineer:
         return df_clean
         
     def handle_after_interaction(self, train_df, test_df, temporal_threshold=None):
-        """after_interaction 피처 처리"""
+        """after_interaction 피처 처리 - 개선된 누수 방지"""
         train_processed = train_df.copy()
         test_processed = test_df.copy()
         
         if 'after_interaction' in train_df.columns:
-            if temporal_threshold is not None:
-                train_id_nums = []
-                for id_val in train_df['ID']:
-                    try:
-                        if '_' in str(id_val):
-                            num = int(str(id_val).split('_')[1])
-                            train_id_nums.append(num)
-                        else:
+            # 데이터 누수 위험성 재평가
+            leakage_detected = False
+            
+            if 'support_needs' in train_df.columns:
+                # 전체 데이터에서의 상관관계 확인
+                overall_correlation = train_df[['after_interaction', 'support_needs']].corr().iloc[0, 1]
+                
+                # 상호정보량 계산
+                after_clean = train_df['after_interaction'].fillna(0)
+                target_clean = train_df['support_needs']
+                mi_score = mutual_info_classif(after_clean.values.reshape(-1, 1), target_clean, random_state=42)[0]
+                
+                # 클래스별 분리도 확인
+                class_means = []
+                for cls in [0, 1, 2]:
+                    class_data = train_df[train_df['support_needs'] == cls]['after_interaction'].dropna()
+                    if len(class_data) > 0:
+                        class_means.append(class_data.mean())
+                
+                if len(class_means) >= 2:
+                    class_separation = max(class_means) - min(class_means)
+                    mean_class_mean = np.mean(class_means)
+                    separation_ratio = class_separation / (mean_class_mean + 1e-8) if mean_class_mean != 0 else 0
+                else:
+                    separation_ratio = 0
+                
+                # 엄격한 누수 기준 적용
+                high_correlation = abs(overall_correlation) > 0.12
+                high_mutual_info = mi_score > 0.25
+                high_separation = separation_ratio > 0.5
+                
+                # 시간적 안전성 확인
+                temporal_leakage = False
+                if temporal_threshold is not None:
+                    train_id_nums = []
+                    for id_val in train_df['ID']:
+                        try:
+                            if '_' in str(id_val):
+                                num = int(str(id_val).split('_')[1])
+                                train_id_nums.append(num)
+                            else:
+                                train_id_nums.append(0)
+                        except:
                             train_id_nums.append(0)
-                    except:
-                        train_id_nums.append(0)
-                
-                safe_mask = np.array(train_id_nums) <= temporal_threshold
-                
-                if 'support_needs' in train_df.columns:
-                    safe_data = train_df[safe_mask]
-                    if len(safe_data) > 1000:
-                        correlation = safe_data[['after_interaction', 'support_needs']].corr().iloc[0, 1]
-                        
-                        if abs(correlation) < 0.18:
-                            train_processed['after_interaction_lag1'] = train_processed.groupby('ID')['after_interaction'].shift(1)
-                            train_processed['after_interaction_lag2'] = train_processed.groupby('ID')['after_interaction'].shift(2)
-                            train_processed['after_interaction_rolling_mean'] = train_processed.groupby('ID')['after_interaction'].rolling(3).mean().reset_index(0, drop=True)
-                            
-                            if 'after_interaction' in test_df.columns:
-                                test_processed['after_interaction_lag1'] = test_processed.groupby('ID')['after_interaction'].shift(1)
-                                test_processed['after_interaction_lag2'] = test_processed.groupby('ID')['after_interaction'].shift(2)
-                                test_processed['after_interaction_rolling_mean'] = test_processed.groupby('ID')['after_interaction'].rolling(3).mean().reset_index(0, drop=True)
-                        else:
-                            train_processed = train_processed.drop('after_interaction', axis=1)
-                            if 'after_interaction' in test_processed.columns:
-                                test_processed = test_processed.drop('after_interaction', axis=1)
+                    
+                    # 시간적으로 안전한 구간에서의 상관관계 확인
+                    safe_mask = np.array(train_id_nums) <= temporal_threshold
+                    
+                    if np.sum(safe_mask) > 500:  # 충분한 안전 데이터가 있는 경우만
+                        safe_data = train_df[safe_mask]
+                        safe_correlation = safe_data[['after_interaction', 'support_needs']].corr().iloc[0, 1]
+                        temporal_leakage = abs(safe_correlation) > 0.15
                     else:
+                        temporal_leakage = True  # 안전 데이터가 부족하면 위험으로 간주
+                
+                # 누수 판정
+                leakage_detected = high_correlation or high_mutual_info or high_separation or temporal_leakage
+                
+                print(f"after_interaction 누수 검사:")
+                print(f"  상관관계: {overall_correlation:.4f} (위험: {high_correlation})")
+                print(f"  상호정보량: {mi_score:.4f} (위험: {high_mutual_info})")
+                print(f"  클래스 분리도: {separation_ratio:.4f} (위험: {high_separation})")
+                print(f"  시간적 누수: {temporal_leakage}")
+                print(f"  최종 누수 판정: {leakage_detected}")
+            
+            if leakage_detected:
+                # 누수 위험이 높으면 해당 피처 완전 제거
+                print("after_interaction 피처 누수 위험으로 인해 제거")
+                if 'after_interaction' in train_processed.columns:
+                    train_processed = train_processed.drop('after_interaction', axis=1)
+                if 'after_interaction' in test_processed.columns:
+                    test_processed = test_processed.drop('after_interaction', axis=1)
+                    
+                # 대체 피처 생성 (시간적으로 안전한 방식)
+                self.create_safe_interaction_features(train_processed, test_processed, temporal_threshold)
+                    
+            else:
+                # 누수 위험이 낮으면 안전한 변형만 사용
+                print("after_interaction 피처 안전한 변형 적용")
+                
+                # 시간적으로 안전한 파생 피처만 생성
+                if temporal_threshold is not None:
+                    train_id_nums = []
+                    for id_val in train_df['ID']:
+                        try:
+                            if '_' in str(id_val):
+                                num = int(str(id_val).split('_')[1])
+                                train_id_nums.append(num)
+                            else:
+                                train_id_nums.append(0)
+                        except:
+                            train_id_nums.append(0)
+                    
+                    safe_mask = np.array(train_id_nums) <= temporal_threshold
+                    
+                    if np.sum(safe_mask) > 1000:
+                        # 안전 구간 데이터로 통계 계산
+                        safe_data = train_processed[safe_mask]['after_interaction']
+                        safe_mean = safe_data.mean()
+                        safe_std = safe_data.std()
+                        
+                        # 안전한 정규화 및 변형
+                        train_processed['after_interaction_normalized'] = (train_processed['after_interaction'] - safe_mean) / (safe_std + 1e-8)
+                        test_processed['after_interaction_normalized'] = (test_processed['after_interaction'] - safe_mean) / (safe_std + 1e-8)
+                        
+                        # 원본 피처는 제거
+                        train_processed = train_processed.drop('after_interaction', axis=1)
+                        test_processed = test_processed.drop('after_interaction', axis=1)
+                    else:
+                        # 안전 데이터가 부족하면 제거
                         train_processed = train_processed.drop('after_interaction', axis=1)
                         if 'after_interaction' in test_processed.columns:
                             test_processed = test_processed.drop('after_interaction', axis=1)
-            else:
-                train_processed = train_processed.drop('after_interaction', axis=1)
-                if 'after_interaction' in test_processed.columns:
-                    test_processed = test_processed.drop('after_interaction', axis=1)
+                else:
+                    # temporal_threshold가 없으면 제거
+                    train_processed = train_processed.drop('after_interaction', axis=1)
+                    if 'after_interaction' in test_processed.columns:
+                        test_processed = test_processed.drop('after_interaction', axis=1)
         
         return train_processed, test_processed
+    
+    def create_safe_interaction_features(self, train_df, test_df, temporal_threshold=None):
+        """안전한 상호작용 피처 생성"""
+        # 기존 피처들 간의 안전한 상호작용만 생성
+        safe_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        
+        for i, feat1 in enumerate(safe_features):
+            for feat2 in safe_features[i+1:]:
+                if feat1 in train_df.columns and feat2 in test_df.columns:
+                    # 기본 수학적 연산 (누수 위험 없음)
+                    train_df[f'safe_{feat1}_{feat2}_ratio'] = train_df[feat1] / (train_df[feat2] + 1e-8)
+                    test_df[f'safe_{feat1}_{feat2}_ratio'] = test_df[feat1] / (test_df[feat2] + 1e-8)
+                    
+                    train_df[f'safe_{feat1}_{feat2}_sum'] = train_df[feat1] + train_df[feat2]
+                    test_df[f'safe_{feat1}_{feat2}_sum'] = test_df[feat1] + test_df[feat2]
     
     def create_temporal_features(self, df):
         """시간 피처 생성"""
@@ -525,8 +618,12 @@ class FeatureEngineer:
         if train_df is None or test_df is None or train_df.empty or test_df.empty:
             return None, None
         
+        print("피처 생성 시작:")
+        
         # after_interaction 처리
         train_df, test_df = self.handle_after_interaction(train_df, test_df, temporal_threshold)
+        
+        print("✓ after_interaction 처리 완료")
         
         # 시간 피처
         train_df = self.create_temporal_features(train_df)
@@ -564,6 +661,8 @@ class FeatureEngineer:
         # 안전한 데이터 변환
         train_df = self.safe_data_conversion(train_df)
         test_df = self.safe_data_conversion(test_df)
+        
+        print("✓ 모든 피처 생성 완료")
         
         return train_df, test_df
 

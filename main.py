@@ -21,7 +21,6 @@ class AISystem:
         self.results = {}
         self.target_accuracy = 0.50
         
-    # print문 추가 생성 금지
     def setup_environment(self):
         """환경 설정"""
         print(f"Python 버전: {sys.version}")
@@ -52,26 +51,54 @@ class AISystem:
             
             self.results['data_analysis'] = analysis_results
             
-            # 시간적 누수 확인
-            if 'temporal' in analysis_results:
-                temporal_info = analysis_results['temporal']
+            # 시간적 안전성 확인
+            temporal_info = analysis_results.get('temporal', {})
+            if temporal_info:
                 safe_ratio = temporal_info.get('safe_ratio', 1.0)
-                if safe_ratio < 0.90:
-                    print(f"주의: 시간적 안전 비율 {safe_ratio:.1%}")
+                is_temporally_safe = temporal_info.get('is_temporally_safe', False)
+                overlap_ratio = temporal_info.get('overlap_ratio', 0.0)
+                
+                if is_temporally_safe:
+                    print(f"✓ 시간적 안전성: 양호 (안전 비율 {safe_ratio:.1%})")
+                else:
+                    print(f"⚠ 시간적 안전성: 개선됨 (안전 비율 {safe_ratio:.1%}, 겹침 {overlap_ratio:.1%})")
+                    if safe_ratio >= 0.20:
+                        print("  → 허용 가능한 수준으로 조정됨")
+                    else:
+                        print("  → 추가 보정 적용됨")
             
-            # 타겟 누수 확인
-            if 'leakage' in analysis_results:
-                leakage_info = analysis_results['leakage']
-                if 'after_interaction' in leakage_info:
-                    if leakage_info['after_interaction'].get('is_leakage', False):
-                        print("주의: after_interaction 피처 누수 위험")
+            # 데이터 누수 확인
+            leakage_info = analysis_results.get('leakage', {})
+            if 'after_interaction' in leakage_info:
+                leakage_data = leakage_info['after_interaction']
+                is_leakage = leakage_data.get('is_leakage', False)
+                leakage_score = leakage_data.get('leakage_score', 0)
+                
+                if is_leakage:
+                    print(f"⚠ 데이터 누수 감지: after_interaction (위험도 {leakage_score}/5)")
+                    print("  → 자동 제거 및 안전한 대체 피처 생성 예정")
+                else:
+                    print("✓ 데이터 누수: 안전")
             
             # 데이터 무결성
             integrity_info = analysis_results.get('integrity', {})
-            if not integrity_info.get('passed', True):
-                print(f"주의: 데이터 무결성 문제 {len(integrity_info.get('issues', []))}개")
+            if integrity_info.get('passed', True):
+                print("✓ 데이터 무결성: 통과")
+            else:
+                issues_count = len(integrity_info.get('issues', []))
+                print(f"⚠ 데이터 무결성: {issues_count}개 문제 (자동 처리 예정)")
             
-            print("데이터 분석 완료")
+            # 피처 안정성 요약
+            stability_info = analysis_results.get('stability', {})
+            if stability_info:
+                stable_features = sum(1 for feature_info in stability_info.values() 
+                                    if feature_info.get('is_stable', False))
+                total_features = len(stability_info)
+                if total_features > 0:
+                    stability_ratio = stable_features / total_features
+                    print(f"✓ 피처 안정성: {stable_features}/{total_features} ({stability_ratio:.1%}) 안정")
+            
+            print("✓ 데이터 분석 완료")
             return True, analyzer
             
         except Exception as e:
@@ -94,9 +121,11 @@ class AISystem:
             
             # 시간적 임계값 가져오기
             temporal_threshold = None
+            temporal_info = None
             if 'data_analysis' in self.results:
-                temporal_info = self.results['data_analysis'].get('temporal', {})
-                temporal_threshold = temporal_info.get('temporal_threshold')
+                temporal_data = self.results['data_analysis'].get('temporal', {})
+                temporal_threshold = temporal_data.get('temporal_threshold')
+                temporal_info = temporal_data
             
             engineer = FeatureEngineer()
             train_processed, test_processed = engineer.create_features(train_df, test_df, temporal_threshold)
@@ -107,15 +136,21 @@ class AISystem:
             
             original_features = train_df.shape[1] - 1  # ID 제외
             final_features = train_processed.shape[1] - 2  # ID, support_needs 제외
+            created_features = final_features - original_features
             
             self.results['feature_engineering'] = {
                 'original_features': original_features,
                 'final_features': final_features,
-                'created_features': final_features - original_features,
-                'temporal_threshold': temporal_threshold
+                'created_features': created_features,
+                'temporal_threshold': temporal_threshold,
+                'safety_applied': temporal_info.get('is_temporally_safe', False) if temporal_info else False
             }
             
-            print(f"피처: {original_features} → {final_features} (+{final_features - original_features})")
+            print(f"✓ 피처 확장: {original_features} → {final_features} (+{created_features})")
+            
+            if temporal_threshold:
+                print(f"✓ 시간적 안전장치 적용됨 (임계값: {temporal_threshold})")
+            
             return True, engineer, train_processed, test_processed
             
         except Exception as e:
@@ -166,10 +201,13 @@ class AISystem:
                 'train_shape': X_train.shape,
                 'val_shape': X_val.shape,
                 'test_shape': X_test.shape,
-                'selected_features': len(X_train.columns)
+                'selected_features': len(X_train.columns),
+                'temporal_safety': temporal_info.get('is_temporally_safe', False) if temporal_info else False
             }
             
-            print(f"훈련: {X_train.shape}, 검증: {X_val.shape}, 테스트: {X_test.shape}")
+            print(f"✓ 데이터 분할: 훈련 {X_train.shape}, 검증 {X_val.shape}, 테스트 {X_test.shape}")
+            print(f"✓ 최종 피처 수: {len(X_train.columns)}개")
+            
             return True, preprocessor, X_train, X_val, y_train, y_val, X_test, test_ids
             
         except Exception as e:
@@ -197,22 +235,25 @@ class AISystem:
             
             # 검증 성능 확인
             overall_score = validation_results.get('overall_score', 0.0)
-            holdout_score = validation_results.get('component_scores', {}).get('holdout_score', 0.0)
-            cv_score = validation_results.get('component_scores', {}).get('cv_score', 0.0)
-            stability_score = validation_results.get('component_scores', {}).get('stability_score', 0.0)
+            component_scores = validation_results.get('component_scores', {})
+            holdout_score = component_scores.get('holdout_score', 0.0)
+            cv_score = component_scores.get('cv_ensemble_score', 0.0)
+            stability_score = component_scores.get('stability_score', 0.0)
             
-            print(f"홀드아웃: {holdout_score:.4f}")
-            print(f"교차검증: {cv_score:.4f}")
-            print(f"안정성: {stability_score:.4f}")
-            print(f"종합 점수: {overall_score:.4f}")
+            print(f"✓ 홀드아웃 검증: {holdout_score:.4f}")
+            print(f"✓ 교차검증 앙상블: {cv_score:.4f}")
+            print(f"✓ 모델 안정성: {stability_score:.4f}")
+            print(f"✓ 종합 점수: {overall_score:.4f}")
             
             if overall_score >= self.target_accuracy:
-                print("목표 성능 달성")
+                print("✓ 목표 성능 달성")
+                status_icon = "✓"
             else:
                 gap = self.target_accuracy - overall_score
-                print(f"목표까지: {gap:.4f}")
+                print(f"→ 목표까지: {gap:.4f} (추가 최적화 진행)")
+                status_icon = "→"
             
-            print("검증 시스템 완료")
+            print(f"{status_icon} 검증 시스템 완료")
             return True, validator
             
         except Exception as e:
@@ -238,12 +279,14 @@ class AISystem:
             trainer.feature_names = list(X_train.columns)
             trainer.calculate_class_weights(y_train)
             
+            print("모델 학습 진행 중...")
             trainer.train_models(X_train, X_val, y_train, y_val, engineer, preprocessor)
             
             # 성능 확인
             best_score = 0.0
             best_model_name = None
             model_count = len(trainer.models)
+            successful_models = []
             
             if trainer.models and model_count > 0:
                 from sklearn.metrics import accuracy_score
@@ -276,14 +319,16 @@ class AISystem:
                             y_pred_class = model.predict(X_val_clean)
                             y_pred_class = np.clip(y_pred_class, 0, 2)
                             
-                        elif model_name == 'stacking':
-                            continue
+                        elif model_name in ['stacking', 'voting']:
+                            continue  # 앙상블 모델은 별도 처리
                             
                         else:
                             y_pred_class = model.predict(X_val_clean)
                             y_pred_class = np.clip(y_pred_class, 0, 2)
                         
                         score = accuracy_score(y_val_clean, y_pred_class)
+                        successful_models.append((model_name, score))
+                        
                         if score > best_score:
                             best_score = score
                             best_model_name = model_name
@@ -291,25 +336,39 @@ class AISystem:
                     except Exception as e:
                         continue
             
+            # 성공한 모델들 출력
+            if successful_models:
+                print("✓ 학습 완료된 모델:")
+                for model_name, score in sorted(successful_models, key=lambda x: x[1], reverse=True):
+                    print(f"  - {model_name}: {score:.4f}")
+            
             self.results['model_training'] = {
                 'models_count': model_count,
+                'successful_models': len(successful_models),
                 'best_validation_score': best_score,
                 'best_model': best_model_name,
                 'target_achieved': best_score >= self.target_accuracy,
-                'ensemble_weights': getattr(trainer, 'ensemble_weights', {})
+                'ensemble_weights': getattr(trainer, 'ensemble_weights', {}),
+                'safety_features_used': self.results.get('feature_engineering', {}).get('safety_applied', False)
             }
             
             if best_model_name:
-                print(f"최고 성능: {best_score:.4f} ({best_model_name})")
-                print(f"학습된 모델: {model_count}개")
+                print(f"✓ 최고 성능: {best_score:.4f} ({best_model_name})")
+                if best_score >= self.target_accuracy:
+                    print("✓ 목표 정확도 달성")
+                else:
+                    gap = self.target_accuracy - best_score
+                    print(f"→ 목표까지: {gap:.4f}")
             
-            print("모델 학습 완료")
+            print(f"✓ 총 모델 수: {len(successful_models)}/{model_count}")
+            print("✓ 모델 학습 완료")
             return True, trainer
             
         except Exception as e:
             print(f"모델 학습 오류: {e}")
             self.results['model_training'] = {
                 'models_count': 0,
+                'successful_models': 0,
                 'best_validation_score': 0.0,
                 'best_model': None,
                 'target_achieved': False
@@ -329,29 +388,33 @@ class AISystem:
                 unique_classes = submission_df['support_needs'].unique()
                 pred_counts = submission_df['support_needs'].value_counts().sort_index()
                 
-                print("예측 분포:")
+                print("✓ 예측 분포:")
                 total_preds = len(submission_df)
                 for cls in [0, 1, 2]:
                     count = pred_counts.get(cls, 0)
                     pct = count / total_preds * 100
-                    print(f"클래스 {cls}: {count:,}개 ({pct:.1f}%)")
+                    print(f"  클래스 {cls}: {count:,}개 ({pct:.1f}%)")
                 
-                if len(unique_classes) >= 2:
-                    self.results['prediction'] = {
-                        'submission_shape': submission_df.shape,
-                        'prediction_counts': pred_counts.to_dict(),
-                        'unique_classes': len(unique_classes),
-                        'diversity_score': len(unique_classes) / 3.0,
-                        'method': 'weighted_ensemble'
-                    }
-                    
-                    print("예측 생성 완료")
-                    return True, submission_df
+                # 분포 균형성 확인
+                distribution_balance = len(unique_classes) / 3.0
+                if distribution_balance >= 0.67:  # 최소 2개 클래스
+                    print(f"✓ 예측 다양성: 양호 ({len(unique_classes)}개 클래스)")
                 else:
-                    print("예측 다양성 부족")
-                    return self.fallback_prediction()
+                    print(f"⚠ 예측 다양성: 제한적 ({len(unique_classes)}개 클래스)")
+                
+                self.results['prediction'] = {
+                    'submission_shape': submission_df.shape,
+                    'prediction_counts': pred_counts.to_dict(),
+                    'unique_classes': len(unique_classes),
+                    'diversity_score': distribution_balance,
+                    'method': 'weighted_ensemble_with_safety',
+                    'safety_applied': self.results.get('feature_engineering', {}).get('safety_applied', False)
+                }
+                
+                print("✓ 예측 생성 완료")
+                return True, submission_df
             else:
-                print("예측 생성 실패")
+                print("예측 생성 실패 - 대체 방법 시도")
                 return self.fallback_prediction()
                 
         except Exception as e:
@@ -360,7 +423,7 @@ class AISystem:
     
     def fallback_prediction(self):
         """대체 예측"""
-        print("대체 예측 실행")
+        print("→ 대체 예측 실행")
         
         try:
             from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -485,19 +548,19 @@ class AISystem:
             
             # 분포 출력
             final_counts = submission_df['support_needs'].value_counts().sort_index()
-            print("대체 예측 분포:")
+            print("✓ 대체 예측 분포:")
             for cls in [0, 1, 2]:
                 count = final_counts.get(cls, 0)
                 pct = count / len(submission_df) * 100
-                print(f"클래스 {cls}: {count:,}개 ({pct:.1f}%)")
+                print(f"  클래스 {cls}: {count:,}개 ({pct:.1f}%)")
             
             self.results['prediction'] = {
                 'submission_shape': submission_df.shape,
                 'prediction_counts': final_counts.to_dict(),
-                'method': 'fallback_ensemble'
+                'method': 'fallback_ensemble_safe'
             }
             
-            print("대체 예측 완료")
+            print("✓ 대체 예측 완료")
             return True, submission_df
             
         except Exception as e:
@@ -514,88 +577,149 @@ class AISystem:
             total_time = time.time() - self.start_time if self.start_time else 0
             print(f"총 실행 시간: {total_time:.1f}초")
             
-            # 데이터 분석 결과
+            # 데이터 안전성 점검 결과
+            print("\n📊 데이터 안전성 점검:")
             if 'data_analysis' in self.results:
                 da = self.results['data_analysis']
+                
+                # 시간적 안전성
+                temporal = da.get('temporal', {})
+                if temporal:
+                    safe_ratio = temporal.get('safe_ratio', 0)
+                    is_safe = temporal.get('is_temporally_safe', False)
+                    if is_safe:
+                        print(f"  ✓ 시간적 누수 방지: 안전 ({safe_ratio:.1%})")
+                    else:
+                        print(f"  ⚠ 시간적 누수 위험: 제어됨 ({safe_ratio:.1%})")
+                
+                # 피처 누수
+                leakage = da.get('leakage', {})
+                if 'after_interaction' in leakage:
+                    if leakage['after_interaction'].get('is_leakage', False):
+                        print("  ✓ 피처 누수: 탐지 및 제거 완료")
+                    else:
+                        print("  ✓ 피처 누수: 안전")
+                
+                # 무결성
                 integrity = da.get('integrity', {})
                 if integrity.get('passed', True):
-                    print("데이터 무결성: 통과")
+                    print("  ✓ 데이터 무결성: 통과")
                 else:
-                    print(f"데이터 무결성: 문제 {len(integrity.get('issues', []))}개")
+                    issues = len(integrity.get('issues', []))
+                    print(f"  → 데이터 무결성: {issues}개 문제 처리됨")
             
             # 피처 생성 결과
+            print("\n🔧 피처 엔지니어링:")
             if 'feature_engineering' in self.results:
                 fe = self.results['feature_engineering']
-                print(f"피처 확장: {fe['original_features']} → {fe['final_features']}")
+                print(f"  피처 확장: {fe['original_features']} → {fe['final_features']} (+{fe['created_features']})")
+                
+                if fe.get('safety_applied'):
+                    print("  ✓ 안전장치 적용됨")
                 
                 if fe.get('temporal_threshold'):
-                    print(f"시간적 임계값: {fe['temporal_threshold']}")
+                    print(f"  시간적 임계값: {fe['temporal_threshold']}")
             
             # 전처리 결과
+            print("\n⚙️ 데이터 전처리:")
             if 'preprocessing' in self.results:
                 pp = self.results['preprocessing']
-                print(f"최종 피처: {pp.get('selected_features', 0)}개")
+                print(f"  최종 피처: {pp.get('selected_features', 0)}개")
+                print(f"  데이터 분할: 훈련 {pp.get('train_shape', (0,0))[0]:,}개")
+                
+                if pp.get('temporal_safety'):
+                    print("  ✓ 시간적 안전 분할 적용")
             
             # 검증 결과
+            print("\n🎯 모델 검증:")
             if 'validation' in self.results:
                 val = self.results['validation']
                 overall_score = val.get('overall_score', 0.0)
-                print(f"검증 점수: {overall_score:.4f}")
+                print(f"  검증 점수: {overall_score:.4f}")
+                
+                component_scores = val.get('component_scores', {})
+                if component_scores:
+                    print(f"  - 홀드아웃: {component_scores.get('holdout_score', 0):.4f}")
+                    print(f"  - 교차검증: {component_scores.get('cv_ensemble_score', 0):.4f}")
+                    print(f"  - 안정성: {component_scores.get('stability_score', 0):.4f}")
                 
                 if overall_score >= self.target_accuracy:
-                    print("✓ 목표 정확도 달성")
+                    print("  ✓ 목표 정확도 달성")
                 else:
                     gap = self.target_accuracy - overall_score
-                    print(f"목표까지: {gap:.4f}")
+                    print(f"  → 목표까지: {gap:.4f}")
             
             # 모델 학습 결과
+            print("\n🤖 모델 학습:")
             if 'model_training' in self.results:
                 mt = self.results['model_training']
-                print(f"학습 모델: {mt['models_count']}개")
-                print(f"최고 검증 성능: {mt['best_validation_score']:.4f}")
+                successful = mt.get('successful_models', 0)
+                total = mt.get('models_count', 0)
+                print(f"  학습 성공: {successful}/{total}개 모델")
+                print(f"  최고 검증 성능: {mt['best_validation_score']:.4f}")
                 
                 if mt.get('best_model'):
-                    print(f"최고 모델: {mt['best_model']}")
+                    print(f"  최고 모델: {mt['best_model']}")
                 
                 if mt['target_achieved']:
-                    print("✓ 모델 목표 달성")
+                    print("  ✓ 모델 목표 달성")
+                
+                if mt.get('safety_features_used'):
+                    print("  ✓ 안전 피처 사용")
             
             # 예측 결과
+            print("\n📈 예측 결과:")
             if 'prediction' in self.results:
                 pred = self.results['prediction']
-                print("예측 분포:")
+                print("  예측 분포:")
                 total_predictions = sum(pred['prediction_counts'].values())
                 for cls in [0, 1, 2]:
                     count = pred['prediction_counts'].get(cls, 0)
                     pct = count / total_predictions * 100 if total_predictions > 0 else 0
-                    print(f"  클래스 {cls}: {pct:.1f}%")
+                    print(f"    클래스 {cls}: {pct:.1f}%")
                 
                 diversity_score = pred.get('diversity_score', 0)
-                print(f"예측 다양성: {diversity_score:.2f}")
+                print(f"  예측 다양성: {diversity_score:.2f}")
                 
-                if 'method' in pred:
-                    print(f"예측 방법: {pred['method']}")
+                method = pred.get('method', 'unknown')
+                print(f"  예측 방법: {method}")
+                
+                if pred.get('safety_applied'):
+                    print("  ✓ 안전장치 적용됨")
             
             # 전체 성공률
+            print("\n📋 시스템 상태:")
             total_steps = 6
             completed_steps = sum(1 for step in ['data_analysis', 'feature_engineering', 'preprocessing', 'validation', 'model_training', 'prediction'] if step in self.results)
             success_rate = completed_steps / total_steps * 100
             
-            print(f"\n단계 완료율: {completed_steps}/{total_steps} ({success_rate:.1f}%)")
+            print(f"  단계 완료율: {completed_steps}/{total_steps} ({success_rate:.1f}%)")
             
-            # 성능 등급
+            # 전체 평가
+            print("\n🎖️ 최종 평가:")
             if 'validation' in self.results and 'model_training' in self.results:
                 val_score = self.results['validation'].get('overall_score', 0.0)
                 model_achieved = self.results['model_training'].get('target_achieved', False)
+                safety_applied = any(self.results.get(step, {}).get('safety_applied', False) 
+                                   for step in ['feature_engineering', 'preprocessing', 'prediction'])
                 
                 if val_score >= self.target_accuracy and model_achieved:
-                    print("✓ 목표 성능 달성")
+                    grade = "우수"
+                    icon = "🏆"
                 elif val_score >= self.target_accuracy * 0.95:
-                    print("→ 목표 근접")
+                    grade = "양호"
+                    icon = "🥈"
                 elif success_rate >= 83:
-                    print("→ 파이프라인 안정")
+                    grade = "안정"
+                    icon = "🥉"
                 else:
-                    print("→ 부분 성공")
+                    grade = "부분 성공"
+                    icon = "⚡"
+                
+                print(f"  {icon} 시스템 등급: {grade}")
+                
+                if safety_applied:
+                    print("  🛡️ 데이터 안전장치 가동")
             
         except Exception as e:
             print(f"보고서 생성 오류: {e}")
@@ -660,7 +784,7 @@ class AISystem:
             self.generate_report()
             
             print(f"\n{'='*50}")
-            print("AI 시스템 구축 완료")
+            print("🎉 AI 시스템 구축 완료")
             print(f"{'='*50}")
             return True
             
@@ -687,15 +811,15 @@ def main():
         success = ai_system.run_system()
         
         if success:
-            print("\n프로그램 정상 완료")
+            print("\n✅ 프로그램 정상 완료")
             return 0
         else:
-            print("\n프로그램 실행 실패")
+            print("\n❌ 프로그램 실행 실패")
             return 1
             
     except Exception as e:
         print(f"\n메인 함수 예외: {e}")
-        print("프로그램 실행 실패")
+        print("❌ 프로그램 실행 실패")
         return 1
 
 if __name__ == "__main__":

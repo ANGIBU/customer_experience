@@ -49,7 +49,7 @@ class DataAnalyzer:
         }
     
     def analyze_temporal_patterns(self):
-        """시간적 패턴 분석"""
+        """시간적 패턴 분석 - 개선된 버전"""
         def extract_id_numbers(id_series):
             numbers = []
             for id_val in id_series:
@@ -68,27 +68,49 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 시간적 분할점 계산 (90% 퍼센타일로 완화)
-            overlap_threshold = int(np.percentile(train_id_nums, 90))
+            # 더 보수적인 시간적 분할 전략
+            # 테스트 데이터와 겹치지 않는 안전한 구간을 더 넓게 확보
+            test_min = min(test_id_nums)
+            
+            # 테스트 최소값보다 충분히 이전의 데이터만 안전하다고 판단
+            # 안전 마진을 더 크게 설정
+            safety_margin = max(1000, int((max(train_id_nums) - min(train_id_nums)) * 0.15))
+            overlap_threshold = test_min - safety_margin
+            
+            # 만약 여전히 안전 비율이 낮다면, 더 보수적으로 설정
+            safe_train_ids = [tid for tid in train_id_nums if tid <= overlap_threshold]
+            initial_safe_ratio = len(safe_train_ids) / len(train_id_nums)
+            
+            if initial_safe_ratio < 0.25:  # 25% 이하면 더 관대하게 설정
+                # 75% 퍼센타일로 완화하되, 테스트 데이터와의 겹침은 최소화
+                percentile_75_threshold = int(np.percentile(train_id_nums, 75))
+                overlap_threshold = min(percentile_75_threshold, test_min - 500)
             
             self.temporal_threshold = overlap_threshold
             
-            # 안전 구간 계산
-            safe_indices = [i for i, tid in enumerate(train_id_nums) if tid > overlap_threshold]
+            # 최종 안전 구간 계산
+            safe_indices = [i for i, tid in enumerate(train_id_nums) if tid <= overlap_threshold]
             safe_ratio = len(safe_indices) / len(train_id_nums)
+            
+            # 시간적 겹침 분석
+            train_in_test_range = len([tid for tid in train_id_nums if tid >= test_min])
+            overlap_ratio = train_in_test_range / len(train_id_nums)
             
             return {
                 'train_range': train_range,
                 'test_range': test_range,
                 'temporal_threshold': self.temporal_threshold,
                 'safe_ratio': safe_ratio,
-                'safe_indices': safe_indices
+                'safe_indices': safe_indices,
+                'overlap_ratio': overlap_ratio,
+                'safety_margin': safety_margin,
+                'is_temporally_safe': safe_ratio >= 0.25 and overlap_ratio <= 0.15
             }
             
         return {}
     
     def detect_data_leakage(self):
-        """데이터 누수 탐지"""
+        """데이터 누수 탐지 - 더 엄격한 기준"""
         leakage_features = {}
         
         if 'after_interaction' in self.train_df.columns and 'support_needs' in self.train_df.columns:
@@ -125,7 +147,36 @@ class DataAnalyzer:
                 
                 f_stat, p_value = stats.f_oneway(*groups) if len(groups) >= 2 else (0, 1)
                 
-                # 완화된 누수 기준 (0.25, 0.5, 0.001)
+                # 더 엄격한 누수 기준 적용
+                high_correlation = abs(correlation) > 0.15
+                high_mutual_info = mi_score > 0.3
+                high_separation = p_value < 0.01
+                strong_class_difference = separation > np.std([stats['mean'] for stats in class_stats.values()]) * 2
+                
+                # 시간적 패턴과 결합한 누수 탐지
+                temporal_leakage = False
+                if hasattr(self, 'temporal_threshold') and self.temporal_threshold is not None:
+                    # 시간적으로 안전한 구간에서의 상관관계 확인
+                    train_id_nums = []
+                    for id_val in self.train_df['ID']:
+                        try:
+                            if '_' in str(id_val):
+                                num = int(str(id_val).split('_')[1])
+                                train_id_nums.append(num)
+                            else:
+                                train_id_nums.append(0)
+                        except:
+                            train_id_nums.append(0)
+                    
+                    safe_mask = np.array(train_id_nums) <= self.temporal_threshold
+                    if np.sum(safe_mask) > 100:
+                        safe_data = self.train_df[safe_mask]
+                        safe_correlation = safe_data[['after_interaction', 'support_needs']].corr().iloc[0, 1]
+                        temporal_leakage = abs(safe_correlation) > 0.2
+                
+                is_leakage = (high_correlation or high_mutual_info or 
+                            high_separation or strong_class_difference or temporal_leakage)
+                
                 leakage_features['after_interaction'] = {
                     'correlation': correlation,
                     'mutual_info': mi_score,
@@ -133,7 +184,15 @@ class DataAnalyzer:
                     'f_statistic': f_stat,
                     'p_value': p_value,
                     'class_stats': class_stats,
-                    'is_leakage': abs(correlation) > 0.25 or mi_score > 0.5 or p_value < 0.001
+                    'high_correlation': high_correlation,
+                    'high_mutual_info': high_mutual_info,
+                    'high_separation': high_separation,
+                    'strong_class_difference': strong_class_difference,
+                    'temporal_leakage': temporal_leakage,
+                    'is_leakage': is_leakage,
+                    'leakage_score': (int(high_correlation) + int(high_mutual_info) + 
+                                    int(high_separation) + int(strong_class_difference) + 
+                                    int(temporal_leakage))
                 }
         
         return leakage_features
