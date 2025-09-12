@@ -6,7 +6,7 @@ import pandas as pd
 import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostClassifier
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, GradientBoostingClassifier, VotingClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
@@ -71,7 +71,7 @@ class PredictionSystem:
             if os.path.exists('models/feature_info.pkl'):
                 self.feature_info = joblib.load('models/feature_info.pkl')
                 self.feature_names = self.feature_info.get('feature_names', [])
-                self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 1.15, 2: 1.09})
+                self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 1.2, 2: 1.22})
                 self.ensemble_weights = self.feature_info.get('ensemble_weights', {})
             
             # 핵심 모델들만 로드
@@ -80,6 +80,7 @@ class PredictionSystem:
                 ('xgboost', 'models/xgboost_model.json', 'xgb'),
                 ('catboost', 'models/catboost_model.pkl', 'pkl'),
                 ('random_forest', 'models/random_forest_model.pkl', 'pkl'),
+                ('extra_trees', 'models/extra_trees_model.pkl', 'pkl'),
                 ('gradient_boosting', 'models/gradient_boosting_model.pkl', 'pkl')
             ]
             
@@ -116,12 +117,11 @@ class PredictionSystem:
     def train_fallback_models(self):
         """빠른 대체 모델 학습"""
         try:
-            from sklearn.ensemble import RandomForestClassifier
+            from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
             from sklearn.preprocessing import LabelEncoder
             
             print("대체 모델 학습 중...")
             
-            # 원본 데이터로 간단한 모델 학습
             train_df = pd.read_csv('train.csv')
             test_df = pd.read_csv('test.csv')
             
@@ -133,14 +133,15 @@ class PredictionSystem:
             test_processed = test_df.copy()
             
             # 범주형 인코딩
-            le = LabelEncoder()
+            le_dict = {}
             for col in categorical_cols:
                 if col in train_df.columns and col in test_df.columns:
                     try:
                         combined = pd.concat([train_df[col], test_df[col]])
-                        le.fit(combined.fillna('Unknown'))
-                        train_processed[col] = le.transform(train_df[col].fillna('Unknown'))
-                        test_processed[col] = le.transform(test_df[col].fillna('Unknown'))
+                        le_dict[col] = LabelEncoder()
+                        le_dict[col].fit(combined.fillna('Unknown'))
+                        train_processed[col] = le_dict[col].transform(train_df[col].fillna('Unknown'))
+                        test_processed[col] = le_dict[col].transform(test_df[col].fillna('Unknown'))
                     except Exception:
                         train_processed[col] = 0
                         test_processed[col] = 0
@@ -156,33 +157,45 @@ class PredictionSystem:
             X_train = train_processed[feature_cols].fillna(0)
             y_train = train_processed['support_needs']
             
-            # 클래스 가중치
-            if self.class_weights is None:
-                class_counts = np.bincount(y_train)
-                total_samples = len(y_train)
-                self.class_weights = {}
-                
-                for i, count in enumerate(class_counts):
-                    if count > 0:
-                        self.class_weights[i] = total_samples / (len(class_counts) * count)
-                    else:
-                        self.class_weights[i] = 1.0
-                
-                self.class_weights[1] *= 1.15
-                self.class_weights[2] *= 1.09
+            # 실제 클래스 분포에 맞춘 가중치
+            class_counts = np.bincount(y_train)
+            total_samples = len(y_train)
+            self.class_weights = {}
             
-            # 빠른 모델 학습
+            for i, count in enumerate(class_counts):
+                if count > 0:
+                    self.class_weights[i] = total_samples / (len(class_counts) * count)
+                else:
+                    self.class_weights[i] = 1.0
+            
+            # 훈련 분포 기반 조정: 클래스 0(46.3%), 클래스 1(26.9%), 클래스 2(26.8%)
+            self.class_weights[0] *= 0.70  # 클래스 0 가중치를 크게 감소
+            self.class_weights[1] *= 1.25  # 클래스 1 가중치 증가
+            self.class_weights[2] *= 1.45  # 클래스 2 가중치를 크게 증가
+            
+            # 여러 대체 모델 학습
             self.models['fallback_rf'] = RandomForestClassifier(
-                n_estimators=100,
-                max_depth=10,
-                min_samples_split=8,
-                min_samples_leaf=4,
+                n_estimators=200,
+                max_depth=12,
+                min_samples_split=6,
+                min_samples_leaf=2,
+                class_weight=self.class_weights,
+                random_state=42,
+                n_jobs=1
+            )
+            
+            self.models['fallback_et'] = ExtraTreesClassifier(
+                n_estimators=150,
+                max_depth=12,
+                min_samples_split=6,
+                min_samples_leaf=2,
                 class_weight=self.class_weights,
                 random_state=42,
                 n_jobs=1
             )
             
             self.models['fallback_rf'].fit(X_train, y_train)
+            self.models['fallback_et'].fit(X_train, y_train)
             self.feature_names = feature_cols
             
             print("대체 모델 학습 완료")
@@ -374,16 +387,18 @@ class PredictionSystem:
             
             return weights
         
-        # 기본 가중치
+        # 클래스 0 예측에 강한 모델 우선순위
         default_weights = {
-            'lightgbm': 0.35,
-            'xgboost': 0.30,
-            'catboost': 0.25,
-            'random_forest': 0.06,
+            'lightgbm': 0.28,
+            'xgboost': 0.26,
+            'catboost': 0.24,
+            'random_forest': 0.12,
+            'extra_trees': 0.05,
             'gradient_boosting': 0.03,
-            'neural_network': 0.008,
-            'logistic_regression': 0.002,
-            'fallback_rf': 0.5
+            'neural_network': 0.015,
+            'logistic_regression': 0.005,
+            'fallback_rf': 0.4,
+            'fallback_et': 0.3
         }
         
         available_models = list(predictions.keys())
@@ -434,8 +449,8 @@ class PredictionSystem:
             print(f"앙상블 예측 오류: {e}")
             return None
     
-    def apply_temperature_scaling(self, pred_proba, temperature=1.02):
-        """온도 스케일링"""
+    def apply_temperature_scaling(self, pred_proba, temperature=0.98):
+        """온도 스케일링 (더 확신 있는 예측)"""
         try:
             # 로그 확률로 변환
             log_proba = np.log(np.clip(pred_proba, 1e-7, 1-1e-7))
@@ -452,11 +467,37 @@ class PredictionSystem:
             print(f"온도 스케일링 오류: {e}")
             return pred_proba
     
-    def apply_class_adjustment(self, pred_proba):
-        """클래스 균형 조정"""
+    def apply_distribution_correction(self, pred_proba):
+        """분포 보정 - 핵심 개선사항"""
         try:
-            # 클래스별 조정 계수
-            class_adjustments = np.array([1.0, 1.05, 1.02])
+            # 훈련 데이터 실제 분포: 클래스 0(46.3%), 클래스 1(26.9%), 클래스 2(26.8%)
+            target_dist = np.array([0.463, 0.269, 0.268])
+            
+            # 현재 예측 분포
+            current_predictions = np.argmax(pred_proba, axis=1)
+            current_dist = np.bincount(current_predictions, minlength=3) / len(current_predictions)
+            
+            # 분포 조정 계수
+            correction_factors = target_dist / (current_dist + 1e-8)
+            
+            # 보정 적용 (점진적)
+            corrected_proba = pred_proba * correction_factors[np.newaxis, :]
+            
+            # 재정규화
+            row_sums = corrected_proba.sum(axis=1, keepdims=True)
+            corrected_proba = corrected_proba / row_sums
+            
+            return corrected_proba
+            
+        except Exception as e:
+            print(f"분포 보정 오류: {e}")
+            return pred_proba
+    
+    def apply_class_specific_adjustment(self, pred_proba):
+        """클래스별 특화 조정"""
+        try:
+            # 클래스 0을 더 많이 예측하도록 조정
+            class_adjustments = np.array([1.15, 0.95, 0.92])
             
             adjusted_proba = pred_proba * class_adjustments[np.newaxis, :]
             
@@ -475,17 +516,31 @@ class PredictionSystem:
         try:
             pred_counts = np.bincount(predictions, minlength=3)
             total_preds = len(predictions)
+            current_dist = pred_counts / total_preds
             
-            # 클래스 1이 너무 적으면 조정
-            if pred_counts[1] < total_preds * 0.10:
-                target_count = int(total_preds * 0.12)
-                shortage = target_count - pred_counts[1]
+            # 목표 분포
+            target_dist = np.array([0.463, 0.269, 0.268])
+            
+            # 클래스 0이 부족하면 다른 클래스에서 전환
+            if current_dist[0] < target_dist[0] - 0.02:
+                shortage = int((target_dist[0] - current_dist[0]) * total_preds)
+                shortage = min(shortage, int(total_preds * 0.05))  # 최대 5% 변경
                 
-                # 현재 클래스 0인 샘플들 중에서 변경
-                class_0_indices = np.where(predictions == 0)[0]
-                if len(class_0_indices) >= shortage and shortage > 0:
-                    change_indices = np.random.choice(class_0_indices, min(shortage, len(class_0_indices)), replace=False)
-                    predictions[change_indices] = 1
+                # 클래스 2에서 일부를 클래스 0으로 변경
+                class_2_indices = np.where(predictions == 2)[0]
+                if len(class_2_indices) >= shortage and shortage > 0:
+                    change_indices = np.random.choice(class_2_indices, shortage, replace=False)
+                    predictions[change_indices] = 0
+            
+            # 클래스 2가 너무 많으면 클래스 0으로 일부 전환
+            elif current_dist[2] > target_dist[2] + 0.03:
+                excess = int((current_dist[2] - target_dist[2]) * total_preds)
+                excess = min(excess, int(total_preds * 0.03))
+                
+                class_2_indices = np.where(predictions == 2)[0]
+                if len(class_2_indices) >= excess and excess > 0:
+                    change_indices = np.random.choice(class_2_indices, excess, replace=False)
+                    predictions[change_indices] = 0
             
             return predictions
             
@@ -511,8 +566,11 @@ class PredictionSystem:
             # 확률 보정
             calibrated_proba = self.apply_temperature_scaling(ensemble_proba)
             
-            # 클래스 균형 조정
-            adjusted_proba = self.apply_class_adjustment(calibrated_proba)
+            # 분포 보정 (핵심)
+            distribution_corrected_proba = self.apply_distribution_correction(calibrated_proba)
+            
+            # 클래스별 조정
+            adjusted_proba = self.apply_class_specific_adjustment(distribution_corrected_proba)
             
             # 최종 예측
             final_predictions = np.argmax(adjusted_proba, axis=1)
@@ -539,11 +597,11 @@ class PredictionSystem:
         try:
             print("최종 대체 예측 수행")
             
-            # 매우 단순한 예측
+            # 실제 훈련 분포 기반 예측
             np.random.seed(42)
             
-            # 클래스 분포 기반 예측
-            class_probs = [0.40, 0.35, 0.25]
+            # 훈련 데이터 실제 분포
+            class_probs = [0.463, 0.269, 0.268]
             predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=class_probs)
             
             # 제출 파일

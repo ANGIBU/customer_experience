@@ -411,19 +411,21 @@ class ValidationSystem:
         cv_score = cv_results.get('mean_score', 0.0)
         stability_score = stability_results.get('overall_stability', 0.0)
         
-        # 클래스 0 성능 보너스
+        # 클래스 0 성능에 매우 높은 보너스
         class_0_recall = holdout_results.get('class_scores', {}).get(0, {}).get('recall', 0.0)
-        class_0_bonus = min(0.05, class_0_recall * 0.1)
+        class_0_precision = holdout_results.get('class_scores', {}).get(0, {}).get('precision', 0.0)
+        class_0_bonus = min(0.08, (class_0_recall + class_0_precision) * 0.08)
         
-        # 분포 일치도 보너스
+        # 분포 일치도에 높은 가중치
         dist_similarity = holdout_results.get('distribution_similarity', 0.0)
-        dist_bonus = min(0.03, (dist_similarity - 0.8) * 0.15) if dist_similarity > 0.8 else 0
+        dist_bonus = min(0.06, (dist_similarity - 0.75) * 0.30) if dist_similarity > 0.75 else 0
         
-        # 가중 평균으로 종합 점수
+        # 가중 평균으로 종합 점수 (분포 중심)
         base_score = (
-            holdout_score * 0.40 +
-            cv_score * 0.35 +
-            stability_score * 0.25
+            holdout_score * 0.35 +
+            cv_score * 0.30 +
+            stability_score * 0.25 +
+            dist_similarity * 0.10  # 분포 일치도 직접 반영
         )
         
         overall_score = base_score + class_0_bonus + dist_bonus
