@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 class ValidationSystem:
     def __init__(self):
         self.validation_results = {}
-        self.gap_ratio = 0.01  # 갭 비율 축소
+        self.gap_ratio = 0.01
         
     def safe_data_conversion(self, X, y=None):
         """안전한 데이터 변환"""
@@ -35,7 +35,7 @@ class ValidationSystem:
         return X_clean
         
     def check_temporal_leakage(self, train_df, test_df):
-        """시간적 누수 확인 - 더 엄격한 기준"""
+        """시간적 누수 확인"""
         issues = []
         
         # ID 겹침 확인
@@ -70,17 +70,16 @@ class ValidationSystem:
                     overlap_count = len([x for x in train_nums if x >= test_min])
                     overlap_ratio = overlap_count / len(train_nums)
                     
-                    # 더 엄격한 기준 (1% 이상 겹침도 위험)
                     if overlap_ratio > 0.01:
                         issues.append(f"temporal_overlap: {overlap_ratio:.3f}")
         
         return len(issues) == 0, issues
     
     def create_simple_validation_model(self, X_train, y_train):
-        """단순한 검증용 모델"""
+        """검증용 모델 (더 보수적으로)"""
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         
-        # 클래스 가중치 계산
+        # 클래스 가중치 계산 (더 보수적으로)
         class_counts = np.bincount(y_train_clean.astype(int))
         total_samples = len(y_train_clean)
         class_weights = {}
@@ -91,17 +90,17 @@ class ValidationSystem:
             else:
                 class_weights[i] = 1.0
         
-        # 클래스 불균형 보정
-        class_weights[1] *= 1.15
-        class_weights[2] *= 1.09
+        # 클래스 불균형 보정 (더 보수적으로)
+        class_weights[1] *= 1.10  # 1.15 → 1.10
+        class_weights[2] *= 1.05  # 1.09 → 1.05
         
-        # Random Forest (단순화)
+        # Random Forest (더 보수적 파라미터)
         model = RandomForestClassifier(
-            n_estimators=100,  # 200 → 100으로 축소
-            max_depth=8,
-            min_samples_split=10,
-            min_samples_leaf=5,
-            max_features=0.8,
+            n_estimators=80,   # 100 → 80으로 감소
+            max_depth=7,       # 8 → 7로 감소
+            min_samples_split=12,   # 10 → 12로 증가
+            min_samples_leaf=6,     # 5 → 6으로 증가
+            max_features=0.7,       # 0.8 → 0.7로 감소
             class_weight=class_weights,
             random_state=42,
             n_jobs=1
@@ -110,8 +109,8 @@ class ValidationSystem:
         model.fit(X_train_clean, y_train_clean)
         return model
     
-    def simple_cross_validation(self, X, y, n_splits=3):  # 5 → 3으로 축소
-        """단순화된 교차검증"""
+    def simple_cross_validation(self, X, y, n_splits=3):
+        """교차검증 (더 보수적으로)"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
         # temporal_id 제거
@@ -126,7 +125,6 @@ class ValidationSystem:
         
         for fold, (train_idx, val_idx) in enumerate(skf.split(X_for_cv, y_clean)):
             try:
-                # 단순한 모델 학습
                 model = self.create_simple_validation_model(X_for_cv[train_idx], y_clean[train_idx])
                 y_pred = model.predict(X_for_cv[val_idx])
                 accuracy = accuracy_score(y_clean[val_idx], y_pred)
@@ -145,11 +143,11 @@ class ValidationSystem:
             'fold_scores': fold_scores,
             'mean_score': mean_score,
             'std_score': std_score,
-            'cv_type': 'stratified_kfold_simple'
+            'cv_type': 'stratified_kfold_conservative'
         }
     
     def holdout_validation_simple(self, X_train, y_train, X_val, y_val):
-        """단순화된 홀드아웃 검증"""
+        """홀드아웃 검증 (더 보수적으로)"""
         if any(data is None for data in [X_train, y_train, X_val, y_val]):
             return self.get_default_holdout_results()
         
@@ -157,7 +155,6 @@ class ValidationSystem:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         try:
-            # 단순한 모델 학습
             model = self.create_simple_validation_model(X_train_clean, y_train_clean)
             y_pred = model.predict(X_val_clean)
             
@@ -187,8 +184,8 @@ class ValidationSystem:
         except Exception:
             return self.get_default_holdout_results()
     
-    def stability_test_simple(self, X, y, n_runs=5):  # 15 → 5로 축소
-        """단순화된 안정성 테스트"""
+    def stability_test_simple(self, X, y, n_runs=5):
+        """안정성 테스트 (더 보수적으로)"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
         # temporal_id 제거
@@ -207,12 +204,11 @@ class ValidationSystem:
             try:
                 X_train, X_val, y_train, y_val = train_test_split(
                     X_temp, y_clean, 
-                    test_size=0.25, 
+                    test_size=0.3,    # 0.25 → 0.3으로 증가 (더 엄격한 테스트)
                     random_state=run * 13, 
                     stratify=y_clean
                 )
                 
-                # 단순한 모델 학습
                 model = self.create_simple_validation_model(X_train, y_train)
                 y_pred = model.predict(X_val)
                 
@@ -234,9 +230,9 @@ class ValidationSystem:
         mean_f1 = np.mean(f1_scores)
         std_f1 = np.std(f1_scores)
         
-        # 안정성 점수
-        accuracy_stability = max(0, 1 - (std_accuracy / mean_accuracy)) if mean_accuracy > 0 else 0
-        f1_stability = max(0, 1 - (std_f1 / mean_f1)) if mean_f1 > 0 else 0
+        # 안정성 점수 (더 엄격하게)
+        accuracy_stability = max(0, 1 - (std_accuracy / mean_accuracy * 1.2)) if mean_accuracy > 0 else 0  # 페널티 증가
+        f1_stability = max(0, 1 - (std_f1 / mean_f1 * 1.2)) if mean_f1 > 0 else 0  # 페널티 증가
         
         overall_stability = (accuracy_stability * 0.6 + f1_stability * 0.4)
         
@@ -254,7 +250,7 @@ class ValidationSystem:
         }
     
     def feature_importance_validation_simple(self, X_train, y_train):
-        """단순화된 피처 중요도 검증"""
+        """피처 중요도 검증"""
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         
         try:
@@ -312,7 +308,7 @@ class ValidationSystem:
         }
     
     def validate_system(self, X_train, y_train, X_val=None, y_val=None):
-        """단순화된 검증 시스템"""
+        """검증 시스템 (보수적으로 수정됨)"""
         if X_train is None or y_train is None or len(X_train) == 0:
             return self.get_comprehensive_default_results()
         
@@ -326,34 +322,38 @@ class ValidationSystem:
             from sklearn.model_selection import train_test_split
             try:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.2, random_state=42, stratify=y_clean
+                    X_clean, y_clean, test_size=0.25, random_state=42, stratify=y_clean  # 0.2 → 0.25로 증가
                 )
             except:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.2, random_state=42
+                    X_clean, y_clean, test_size=0.25, random_state=42
                 )
             holdout_results = self.holdout_validation_simple(X_train_split, y_train_split, X_val_split, y_val_split)
         
-        # 교차검증 (단순화)
+        # 교차검증
         cv_results = self.simple_cross_validation(X_train, y_train)
         
-        # 안정성 테스트 (단순화)
+        # 안정성 테스트
         stability_results = self.stability_test_simple(X_train, y_train)
         
-        # 피처 중요도 검증 (단순화)
+        # 피처 중요도 검증
         feature_results = self.feature_importance_validation_simple(X_train, y_train)
         
-        # 종합 점수 계산
+        # 종합 점수 계산 (더 보수적으로 조정)
         holdout_score = holdout_results.get('accuracy', 0.0)
         cv_score = cv_results.get('mean_score', 0.0)
         stability_score = stability_results.get('overall_stability', 0.0)
         
-        # 가중 평균으로 종합 점수
+        # 가중 평균으로 종합 점수 (더 보수적으로 조정)
         overall_score = (
-            holdout_score * 0.50 +      # 홀드아웃 가중치 증가
-            cv_score * 0.30 +           # 교차검증 가중치 감소  
-            stability_score * 0.20      # 안정성 가중치 감소
+            holdout_score * 0.40 +      # 홀드아웃 가중치 감소
+            cv_score * 0.35 +           # 교차검증 가중치 증가  
+            stability_score * 0.25      # 안정성 가중치 증가
         )
+        
+        # 보수적 페널티 적용 (실제 성능과의 격차 고려)
+        conservative_penalty = 0.95  # 5% 보수적 조정
+        overall_score = overall_score * conservative_penalty
         
         self.validation_results = {
             'holdout': holdout_results,
@@ -365,7 +365,9 @@ class ValidationSystem:
                 'holdout_score': holdout_score,
                 'cv_ensemble_score': cv_score,
                 'stability_score': stability_score
-            }
+            },
+            'conservative_adjustment': True,  # 보수적 조정 적용됨을 표시
+            'penalty_applied': conservative_penalty
         }
         
         return self.validation_results
@@ -382,7 +384,9 @@ class ValidationSystem:
                 'holdout_score': 0.0,
                 'cv_ensemble_score': 0.0,
                 'stability_score': 0.0
-            }
+            },
+            'conservative_adjustment': True,
+            'penalty_applied': 0.95
         }
 
 def main():
