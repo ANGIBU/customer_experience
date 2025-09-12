@@ -21,13 +21,11 @@ class AISystem:
         self.results = {}
         self.target_accuracy = 0.50
         
+    # print문 추가 생성 금지
     def setup_environment(self):
         """환경 설정"""
-        print("AI 시스템 시작")
-        print("=" * 40)
         print(f"Python 버전: {sys.version}")
         print(f"작업 디렉토리: {os.getcwd()}")
-        print(f"목표 정확도: {self.target_accuracy}")
         
         # 필수 파일 확인
         required_files = ['train.csv', 'test.csv', 'sample_submission.csv']
