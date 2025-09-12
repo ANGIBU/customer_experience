@@ -49,7 +49,7 @@ class DataAnalyzer:
         }
     
     def analyze_temporal_patterns(self):
-        """시간적 패턴 분석 - 더 엄격한 기준"""
+        """시간적 패턴 분석"""
         def extract_id_numbers(id_series):
             numbers = []
             for id_val in id_series:
@@ -68,25 +68,24 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 더 보수적인 시간적 분할 전략
+            # 시간적 분할 전략
             test_min = min(test_id_nums)
             test_max = max(test_id_nums)
             train_max = max(train_id_nums)
             
-            # 안전 마진을 매우 크게 설정하여 시간적 누수 완전 차단
+            # 안전 마진 설정
             total_range = train_max - min(train_id_nums)
-            safety_margin = max(2000, int(total_range * 0.25))  # 25% 마진
+            safety_margin = max(2000, int(total_range * 0.25))
             
-            # 테스트 데이터와 완전히 분리된 임계값 설정
+            # 안전한 임계값 설정
             if test_min - safety_margin > min(train_id_nums):
                 overlap_threshold = test_min - safety_margin
             else:
-                # 50% 지점으로 보수적 설정
                 overlap_threshold = int(np.percentile(train_id_nums, 50))
             
             self.temporal_threshold = overlap_threshold
             
-            # 최종 안전 구간 계산
+            # 안전 구간 계산
             safe_indices = [i for i, tid in enumerate(train_id_nums) if tid <= overlap_threshold]
             safe_ratio = len(safe_indices) / len(train_id_nums) if train_id_nums else 0
             
@@ -94,7 +93,7 @@ class DataAnalyzer:
             overlap_count = len([tid for tid in train_id_nums if tid >= test_min])
             overlap_ratio = overlap_count / len(train_id_nums) if train_id_nums else 0
             
-            # 엄격한 안전성 기준 (성능과 안전성 균형)
+            # 안전성 기준
             is_safe = safe_ratio >= 0.60 and overlap_ratio <= 0.08
             
             return {
@@ -112,7 +111,7 @@ class DataAnalyzer:
         return {}
     
     def detect_data_leakage(self):
-        """데이터 누수 탐지 - 매우 엄격한 기준"""
+        """데이터 누수 탐지"""
         leakage_features = {}
         
         if 'after_interaction' in self.train_df.columns and 'support_needs' in self.train_df.columns:
@@ -149,13 +148,13 @@ class DataAnalyzer:
                 
                 f_stat, p_value = stats.f_oneway(*groups) if len(groups) >= 2 else (0, 1)
                 
-                # 매우 엄격한 누수 기준 적용
-                high_correlation = abs(correlation) > 0.08  # 0.15 → 0.08
-                high_mutual_info = mi_score > 0.20  # 0.3 → 0.20
-                high_separation = p_value < 0.05  # 0.01 → 0.05
-                strong_class_difference = separation > np.std([stats['mean'] for stats in class_stats.values()]) * 1.5  # 2 → 1.5
+                # 누수 기준 적용
+                high_correlation = abs(correlation) > 0.08
+                high_mutual_info = mi_score > 0.20
+                high_separation = p_value < 0.05
+                strong_class_difference = separation > np.std([stats['mean'] for stats in class_stats.values()]) * 1.5
                 
-                # 시간적 패턴과 결합한 누수 탐지 - 더 엄격하게
+                # 시간적 패턴과 결합한 누수 탐지
                 temporal_leakage = False
                 if hasattr(self, 'temporal_threshold') and self.temporal_threshold is not None:
                     train_id_nums = []
@@ -173,11 +172,11 @@ class DataAnalyzer:
                     if np.sum(safe_mask) > 500:
                         safe_data = self.train_df[safe_mask]
                         safe_correlation = safe_data[['after_interaction', 'support_needs']].corr().iloc[0, 1]
-                        temporal_leakage = abs(safe_correlation) > 0.05  # 0.2 → 0.05로 매우 엄격하게
+                        temporal_leakage = abs(safe_correlation) > 0.05
                     else:
-                        temporal_leakage = True  # 안전 데이터 부족시 위험으로 간주
+                        temporal_leakage = True
                 
-                # 누수 판정 - 하나라도 위험하면 제거
+                # 누수 판정
                 is_leakage = (high_correlation or high_mutual_info or 
                             high_separation or strong_class_difference or temporal_leakage)
                 
@@ -241,7 +240,7 @@ class DataAnalyzer:
                         'psi_score': psi_score,
                         'train_stats': train_stats,
                         'test_stats': test_stats,
-                        'is_stable': ks_stat < 0.05 and psi_score < 0.10  # 더 엄격한 기준
+                        'is_stable': ks_stat < 0.05 and psi_score < 0.10
                     }
         
         return stability_results
@@ -375,7 +374,7 @@ class DataAnalyzer:
             if col != 'ID':
                 missing_ratio = self.train_df[col].isnull().mean()
                 missing_info[col] = missing_ratio
-                if missing_ratio > 0.30:  # 30%로 기준 강화
+                if missing_ratio > 0.30:
                     issues.append(f"{col}_high_missing: {missing_ratio:.3f}")
         
         return len(issues) == 0, issues, missing_info

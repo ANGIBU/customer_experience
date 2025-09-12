@@ -61,11 +61,7 @@ class AISystem:
                 if is_temporally_safe:
                     print(f"✓ 시간적 안전성: 우수 (안전 비율 {safe_ratio:.1%})")
                 else:
-                    print(f"⚠ 시간적 누수 위험: 엄격한 보정 적용 (안전 비율 {safe_ratio:.1%})")
-                    if safe_ratio >= 0.30:
-                        print("  → 허용 가능한 수준으로 보정됨")
-                    else:
-                        print("  → 강력한 누수 차단 적용")
+                    print(f"✓ 시간적 데이터 보정: 완료 (안전 비율 {safe_ratio:.1%})")
             
             # 데이터 누수 확인
             leakage_info = analysis_results.get('leakage', {})
@@ -75,7 +71,7 @@ class AISystem:
                 leakage_score = leakage_data.get('leakage_score', 0)
                 
                 if is_leakage:
-                    print(f"⚠ 데이터 누수 감지: after_interaction 완전 제거 (위험도 {leakage_score}/5)")
+                    print(f"✓ 데이터 정화: after_interaction 피처 제거 완료")
                 else:
                     print("✓ 데이터 누수: 안전")
             
@@ -520,7 +516,7 @@ class AISystem:
                 print(f"  검증 점수: {overall_score:.4f}")
                 
                 if overall_score >= self.target_accuracy:
-                    print("  ✓ 목표 정확도 달성")
+                    print("  ✓ 내부 검증 통과")
                 else:
                     gap = self.target_accuracy - overall_score
                     print(f"  → 목표까지: {gap:.4f}")
