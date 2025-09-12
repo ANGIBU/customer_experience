@@ -41,7 +41,7 @@ class AISystem:
         return True
     
     def step1_data_analysis(self):
-        """데이터 분석 (최적화)"""
+        """데이터 분석"""
         print("\n1단계: 데이터 분석")
         print("=" * 30)
         
@@ -96,7 +96,7 @@ class AISystem:
             return False, None
     
     def step2_feature_engineering(self):
-        """피처 생성 (최적화)"""
+        """피처 생성"""
         print("\n2단계: 피처 생성")
         print("=" * 30)
         
@@ -145,7 +145,7 @@ class AISystem:
             return False, None, None, None
     
     def step3_preprocessing(self, train_df, test_df):
-        """데이터 전처리 (최적화)"""
+        """데이터 전처리"""
         print("\n3단계: 데이터 전처리")
         print("=" * 30)
         
@@ -171,7 +171,7 @@ class AISystem:
                 print("전처리 데이터 비어있음")
                 return False, None, None, None, None, None, None, None
             
-            # 최적화된 데이터 분할
+            # 데이터 분할
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_optimized(
                 train_final, test_final, val_size=0.2, gap_size=0.01
             )
@@ -193,7 +193,7 @@ class AISystem:
             }
             
             print(f"✓ 데이터 분할: 훈련 {X_train.shape}, 검증 {X_val.shape}, 테스트 {X_test.shape}")
-            print(f"✓ 최종 피처 수: {len(X_train.columns)}개 (최적화됨)")
+            print(f"✓ 최종 피처 수: {len(X_train.columns)}개")
             
             return True, preprocessor, X_train, X_val, y_train, y_val, X_test, test_ids
             
@@ -202,7 +202,7 @@ class AISystem:
             return False, None, None, None, None, None, None, None
     
     def step4_validation(self, X_train, y_train, X_val=None, y_val=None):
-        """검증 시스템 (최적화)"""
+        """검증 시스템"""
         print("\n4단계: 검증 시스템")
         print("=" * 30)
         
@@ -249,7 +249,7 @@ class AISystem:
             return False, None
     
     def step5_model_training(self, X_train, X_val, y_train, y_val, engineer, preprocessor):
-        """모델 학습 (최적화)"""
+        """모델 학습"""
         print("\n5단계: 모델 학습")
         print("=" * 30)
         
@@ -266,7 +266,7 @@ class AISystem:
             trainer.feature_names = list(X_train.columns)
             trainer.calculate_class_weights(y_train)
             
-            print("핵심 모델 학습 진행...")
+            # 모델 학습 실행
             results = trainer.train_models(X_train, X_val, y_train, y_val, engineer, preprocessor)
             
             # 성능 확인
@@ -292,11 +292,6 @@ class AISystem:
                 'safety_features_used': True
             }
             
-            if successful_models:
-                print("✓ 학습 완료된 모델:")
-                for model_name, score in sorted(successful_models, key=lambda x: x[1], reverse=True)[:5]:
-                    print(f"  - {model_name}: {score:.4f}")
-            
             if best_model_name:
                 print(f"✓ 최고 성능: {best_score:.4f} ({best_model_name})")
                 if best_score >= self.target_accuracy:
@@ -321,7 +316,7 @@ class AISystem:
             return False, None
     
     def step6_prediction(self):
-        """예측 생성 (최적화)"""
+        """예측 생성"""
         print("\n6단계: 예측 생성")
         print("=" * 30)
         
@@ -417,7 +412,7 @@ class AISystem:
             
             # 빠른 모델 학습
             model = RandomForestClassifier(
-                n_estimators=100,  # 500 → 100으로 축소
+                n_estimators=100,
                 max_depth=10,
                 min_samples_split=8,
                 min_samples_leaf=4,
@@ -469,7 +464,7 @@ class AISystem:
             return False, None
     
     def generate_report(self):
-        """간소화된 성과 보고서"""
+        """성과 보고서"""
         print("\n" + "=" * 50)
         print("최종 성과 보고서")
         print("=" * 50)
@@ -584,7 +579,7 @@ class AISystem:
             print(f"보고서 생성 오류: {e}")
     
     def run_system(self):
-        """최적화된 시스템 실행"""
+        """시스템 실행"""
         try:
             # 환경 설정
             if not self.setup_environment():
@@ -643,7 +638,7 @@ class AISystem:
             self.generate_report()
             
             print(f"\n{'='*50}")
-            print("🎉 AI 시스템 구축 완료")
+            print("🎉 시스템 구축 완료")
             print(f"{'='*50}")
             return True
             

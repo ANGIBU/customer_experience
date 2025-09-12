@@ -27,25 +27,32 @@ class PredictionSystem:
         
     def safe_data_conversion(self, X, y=None):
         """안전한 데이터 변환"""
-        if hasattr(X, 'values'):
-            X_array = X.values
-        else:
-            X_array = np.array(X)
-        
-        X_clean = np.nan_to_num(X_array, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        if y is not None:
-            if hasattr(y, 'values'):
-                y_array = y.values
+        try:
+            if hasattr(X, 'values'):
+                X_array = X.values
             else:
-                y_array = np.array(y)
-            y_clean = np.clip(y_array, 0, 2)
-            return X_clean, y_clean
-        
-        return X_clean
+                X_array = np.array(X)
+            
+            X_clean = np.nan_to_num(X_array, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            if y is not None:
+                if hasattr(y, 'values'):
+                    y_array = y.values
+                else:
+                    y_array = np.array(y)
+                y_clean = np.clip(y_array, 0, 2)
+                return X_clean, y_clean
+            
+            return X_clean
+            
+        except Exception as e:
+            print(f"데이터 변환 오류: {e}")
+            if y is not None:
+                return np.zeros((1, 1)), np.zeros(1)
+            return np.zeros((1, 1))
         
     def load_trained_models(self):
-        """학습된 모델 로드 (최적화)"""
+        """학습된 모델 로드"""
         try:
             # 전처리기 로드
             if os.path.exists('models/preprocessor.pkl'):
@@ -67,7 +74,7 @@ class PredictionSystem:
                 self.class_weights = self.feature_info.get('class_weights', {0: 1.0, 1: 1.15, 2: 1.09})
                 self.ensemble_weights = self.feature_info.get('ensemble_weights', {})
             
-            # 핵심 모델들만 로드 (실행 시간 단축)
+            # 핵심 모델들만 로드
             priority_models = [
                 ('lightgbm', 'models/lightgbm_model.txt', 'lgb'),
                 ('xgboost', 'models/xgboost_model.json', 'xgb'),
@@ -129,14 +136,22 @@ class PredictionSystem:
             le = LabelEncoder()
             for col in categorical_cols:
                 if col in train_df.columns and col in test_df.columns:
-                    combined = pd.concat([train_df[col], test_df[col]])
-                    le.fit(combined.fillna('Unknown'))
-                    train_processed[col] = le.transform(train_df[col].fillna('Unknown'))
-                    test_processed[col] = le.transform(test_df[col].fillna('Unknown'))
+                    try:
+                        combined = pd.concat([train_df[col], test_df[col]])
+                        le.fit(combined.fillna('Unknown'))
+                        train_processed[col] = le.transform(train_df[col].fillna('Unknown'))
+                        test_processed[col] = le.transform(test_df[col].fillna('Unknown'))
+                    except Exception:
+                        train_processed[col] = 0
+                        test_processed[col] = 0
             
             # 피처 선택
             feature_cols = numeric_cols + categorical_cols
             feature_cols = [col for col in feature_cols if col in train_processed.columns and col in test_processed.columns]
+            
+            if not feature_cols:
+                print("사용 가능한 피처 없음")
+                return False
             
             X_train = train_processed[feature_cols].fillna(0)
             y_train = train_processed['support_needs']
@@ -178,7 +193,7 @@ class PredictionSystem:
             return False
     
     def prepare_test_data(self):
-        """테스트 데이터 준비 (최적화)"""
+        """테스트 데이터 준비"""
         try:
             train_df = pd.read_csv('train.csv')
             test_df = pd.read_csv('test.csv')
@@ -190,13 +205,18 @@ class PredictionSystem:
                 analysis_results = analyzer.run_analysis()
                 temporal_threshold = analysis_results.get('temporal', {}).get('temporal_threshold')
                 temporal_info = analysis_results.get('temporal')
-            except:
+            except Exception:
                 temporal_threshold = None
                 temporal_info = None
             
-            # 피처 생성 (단순화)
+            # 피처 생성
             if self.feature_engineer:
-                train_processed, test_processed = self.feature_engineer.create_features(train_df, test_df, temporal_threshold)
+                try:
+                    train_processed, test_processed = self.feature_engineer.create_features(train_df, test_df, temporal_threshold)
+                except Exception as e:
+                    print(f"피처 생성 오류: {e}")
+                    train_processed = train_df.copy()
+                    test_processed = test_df.copy()
             else:
                 # 기본 처리
                 train_processed = train_df.copy()
@@ -208,14 +228,18 @@ class PredictionSystem:
                 if 'after_interaction' in test_processed.columns:
                     test_processed = test_processed.drop('after_interaction', axis=1)
             
-            # 전처리 (단순화)
+            # 전처리
             if self.preprocessor:
-                train_final, test_final = self.preprocessor.process_data(train_processed, test_processed, temporal_info)
+                try:
+                    train_final, test_final = self.preprocessor.process_data(train_processed, test_processed, temporal_info)
+                except Exception as e:
+                    print(f"전처리 오류: {e}")
+                    train_final, test_final = train_processed, test_processed
             else:
                 train_final, test_final = train_processed, test_processed
             
             # 피처 순서 맞춤
-            if self.feature_names is not None:
+            if self.feature_names is not None and len(self.feature_names) > 0:
                 # 누락된 피처 추가
                 for feature in self.feature_names:
                     if feature not in test_final.columns:
@@ -223,7 +247,13 @@ class PredictionSystem:
                 
                 # 순서 맞춤
                 available_features = [f for f in self.feature_names if f in test_final.columns]
-                X_test = test_final[available_features].copy()
+                if available_features:
+                    X_test = test_final[available_features].copy()
+                else:
+                    # 기본 피처 사용
+                    basic_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'gender', 'subscription_type']
+                    available_features = [f for f in basic_features if f in test_final.columns]
+                    X_test = test_final[available_features].fillna(0)
             else:
                 # 기본 피처만 사용
                 basic_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'gender', 'subscription_type']
@@ -237,15 +267,19 @@ class PredictionSystem:
         except Exception as e:
             print(f"테스트 데이터 준비 오류: {e}")
             # 최소한의 기본 데이터 준비
-            test_df = pd.read_csv('test.csv')
-            basic_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
-            available_cols = [col for col in basic_cols if col in test_df.columns]
-            X_test = test_df[available_cols].fillna(0)
-            test_ids = test_df['ID']
-            return X_test, test_ids
+            try:
+                test_df = pd.read_csv('test.csv')
+                basic_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+                available_cols = [col for col in basic_cols if col in test_df.columns]
+                X_test = test_df[available_cols].fillna(0) if available_cols else pd.DataFrame({'dummy': [0] * len(test_df)})
+                test_ids = test_df['ID']
+                return X_test, test_ids
+            except Exception as e2:
+                print(f"기본 데이터 준비도 실패: {e2}")
+                return None, None
     
     def predict_individual_models(self, X_test):
-        """개별 모델 예측 (최적화)"""
+        """개별 모델 예측"""
         predictions = {}
         X_test_clean = self.safe_data_conversion(X_test)
         
@@ -262,19 +296,23 @@ class PredictionSystem:
                     predictions[name] = pred_proba
                     
                 elif name == 'xgboost':
-                    if self.feature_names is not None:
-                        xgb_test = xgb.DMatrix(X_test_clean, feature_names=self.feature_names)
-                    else:
-                        xgb_test = xgb.DMatrix(X_test_clean)
-                    
-                    pred_proba = model.predict(xgb_test)
-                    if pred_proba.ndim == 1:
-                        # 이진 분류를 다중 분류로 변환
-                        pred_proba_multi = np.zeros((len(pred_proba), 3))
-                        pred_proba_multi[:, 1] = pred_proba
-                        pred_proba_multi[:, 0] = 1 - pred_proba
-                        pred_proba = pred_proba_multi
-                    predictions[name] = pred_proba
+                    try:
+                        if self.feature_names is not None:
+                            xgb_test = xgb.DMatrix(X_test_clean, feature_names=self.feature_names)
+                        else:
+                            xgb_test = xgb.DMatrix(X_test_clean)
+                        
+                        pred_proba = model.predict(xgb_test)
+                        if pred_proba.ndim == 1:
+                            # 이진 분류를 다중 분류로 변환
+                            pred_proba_multi = np.zeros((len(pred_proba), 3))
+                            pred_proba_multi[:, 1] = pred_proba
+                            pred_proba_multi[:, 0] = 1 - pred_proba
+                            pred_proba = pred_proba_multi
+                        predictions[name] = pred_proba
+                    except Exception as xgb_e:
+                        print(f"XGBoost 예측 오류: {xgb_e}")
+                        continue
                     
                 elif name.startswith('fallback'):
                     # 대체 모델 처리
@@ -314,7 +352,7 @@ class PredictionSystem:
         return predictions
     
     def create_ensemble_weights(self, predictions):
-        """앙상블 가중치 생성 (단순화)"""
+        """앙상블 가중치 생성"""
         if not predictions or len(predictions) < 1:
             return None
         
@@ -345,7 +383,7 @@ class PredictionSystem:
             'gradient_boosting': 0.03,
             'neural_network': 0.008,
             'logistic_regression': 0.002,
-            'fallback_rf': 0.5  # 대체 모델
+            'fallback_rf': 0.5
         }
         
         available_models = list(predictions.keys())
@@ -371,28 +409,33 @@ class PredictionSystem:
         if not predictions:
             return None
         
-        weights = self.create_ensemble_weights(predictions)
-        if not weights:
+        try:
+            weights = self.create_ensemble_weights(predictions)
+            if not weights:
+                return None
+            
+            # 가중 평균
+            first_pred = list(predictions.values())[0]
+            ensemble_proba = np.zeros((first_pred.shape[0], 3))
+            
+            for model_name, pred in predictions.items():
+                if model_name in weights and isinstance(pred, np.ndarray) and pred.ndim == 2 and pred.shape[1] == 3:
+                    weight = weights[model_name]
+                    ensemble_proba += weight * pred
+            
+            # 정규화
+            row_sums = ensemble_proba.sum(axis=1, keepdims=True)
+            ensemble_proba = np.where(row_sums > 0, ensemble_proba / row_sums, 
+                                     np.array([0.33, 0.34, 0.33])[np.newaxis, :])
+            
+            return ensemble_proba
+            
+        except Exception as e:
+            print(f"앙상블 예측 오류: {e}")
             return None
-        
-        # 가중 평균
-        first_pred = list(predictions.values())[0]
-        ensemble_proba = np.zeros((first_pred.shape[0], 3))
-        
-        for model_name, pred in predictions.items():
-            if model_name in weights and isinstance(pred, np.ndarray) and pred.ndim == 2 and pred.shape[1] == 3:
-                weight = weights[model_name]
-                ensemble_proba += weight * pred
-        
-        # 정규화
-        row_sums = ensemble_proba.sum(axis=1, keepdims=True)
-        ensemble_proba = np.where(row_sums > 0, ensemble_proba / row_sums, 
-                                 np.array([0.33, 0.34, 0.33])[np.newaxis, :])
-        
-        return ensemble_proba
     
     def apply_temperature_scaling(self, pred_proba, temperature=1.02):
-        """온도 스케일링 (단순화)"""
+        """온도 스케일링"""
         try:
             # 로그 확률로 변환
             log_proba = np.log(np.clip(pred_proba, 1e-7, 1-1e-7))
@@ -405,42 +448,53 @@ class PredictionSystem:
             
             return scaled_proba
             
-        except Exception:
+        except Exception as e:
+            print(f"온도 스케일링 오류: {e}")
             return pred_proba
     
     def apply_class_adjustment(self, pred_proba):
-        """클래스 균형 조정 (단순화)"""
-        # 클래스별 조정 계수
-        class_adjustments = np.array([1.0, 1.05, 1.02])
-        
-        adjusted_proba = pred_proba * class_adjustments[np.newaxis, :]
-        
-        # 재정규화
-        row_sums = adjusted_proba.sum(axis=1, keepdims=True)
-        final_proba = adjusted_proba / row_sums
-        
-        return final_proba
+        """클래스 균형 조정"""
+        try:
+            # 클래스별 조정 계수
+            class_adjustments = np.array([1.0, 1.05, 1.02])
+            
+            adjusted_proba = pred_proba * class_adjustments[np.newaxis, :]
+            
+            # 재정규화
+            row_sums = adjusted_proba.sum(axis=1, keepdims=True)
+            final_proba = adjusted_proba / row_sums
+            
+            return final_proba
+            
+        except Exception as e:
+            print(f"클래스 조정 오류: {e}")
+            return pred_proba
     
     def apply_post_processing(self, predictions):
-        """예측 후처리 (단순화)"""
-        pred_counts = np.bincount(predictions, minlength=3)
-        total_preds = len(predictions)
-        
-        # 클래스 1이 너무 적으면 조정
-        if pred_counts[1] < total_preds * 0.10:
-            target_count = int(total_preds * 0.12)
-            shortage = target_count - pred_counts[1]
+        """예측 후처리"""
+        try:
+            pred_counts = np.bincount(predictions, minlength=3)
+            total_preds = len(predictions)
             
-            # 현재 클래스 0인 샘플들 중에서 변경
-            class_0_indices = np.where(predictions == 0)[0]
-            if len(class_0_indices) >= shortage and shortage > 0:
-                change_indices = np.random.choice(class_0_indices, min(shortage, len(class_0_indices)), replace=False)
-                predictions[change_indices] = 1
-        
-        return predictions
+            # 클래스 1이 너무 적으면 조정
+            if pred_counts[1] < total_preds * 0.10:
+                target_count = int(total_preds * 0.12)
+                shortage = target_count - pred_counts[1]
+                
+                # 현재 클래스 0인 샘플들 중에서 변경
+                class_0_indices = np.where(predictions == 0)[0]
+                if len(class_0_indices) >= shortage and shortage > 0:
+                    change_indices = np.random.choice(class_0_indices, min(shortage, len(class_0_indices)), replace=False)
+                    predictions[change_indices] = 1
+            
+            return predictions
+            
+        except Exception as e:
+            print(f"후처리 오류: {e}")
+            return predictions
     
     def generate_predictions(self, X_test, test_ids):
-        """예측 생성 (최적화)"""
+        """예측 생성"""
         try:
             # 개별 모델 예측
             predictions = self.predict_individual_models(X_test)
@@ -489,7 +543,7 @@ class PredictionSystem:
             np.random.seed(42)
             
             # 클래스 분포 기반 예측
-            class_probs = [0.40, 0.35, 0.25]  # 대략적인 클래스 분포
+            class_probs = [0.40, 0.35, 0.25]
             predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=class_probs)
             
             # 제출 파일
@@ -531,11 +585,12 @@ class PredictionSystem:
             
             return True
             
-        except Exception:
+        except Exception as e:
+            print(f"검증 오류: {e}")
             return False
     
     def generate_final_predictions(self):
-        """최종 예측 파이프라인 (최적화)"""
+        """최종 예측 파이프라인"""
         print("예측 시스템 시작")
         
         # 모델 로드
@@ -544,6 +599,10 @@ class PredictionSystem:
         
         try:
             X_test, test_ids = self.prepare_test_data()
+            if X_test is None or test_ids is None:
+                print("테스트 데이터 준비 실패")
+                return None
+            
             print(f"테스트 데이터 준비 완료: {X_test.shape}")
         except Exception as e:
             print(f"테스트 데이터 준비 실패: {e}")

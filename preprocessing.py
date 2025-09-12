@@ -44,34 +44,39 @@ class DataPreprocessor:
         if temporal_threshold is None or 'temporal_id' not in train_df.columns:
             return train_df
         
-        # temporal_threshold 기반 필터링
-        safe_mask = train_df['temporal_id'] <= temporal_threshold
-        safe_data = train_df[safe_mask].copy()
-        
-        # 데이터 품질 확인
-        if len(safe_data) < len(train_df) * 0.6:
-            percentile_70 = np.percentile(train_df['temporal_id'], 70)
-            safe_mask = train_df['temporal_id'] <= percentile_70
+        try:
+            # temporal_threshold 기반 필터링
+            safe_mask = train_df['temporal_id'] <= temporal_threshold
             safe_data = train_df[safe_mask].copy()
-        
-        print(f"시간적 필터링: {len(train_df)} → {len(safe_data)} ({len(safe_data)/len(train_df):.1%})")
-        
-        return safe_data if len(safe_data) > 8000 else train_df
+            
+            # 데이터 품질 확인
+            if len(safe_data) < len(train_df) * 0.6:
+                percentile_70 = np.percentile(train_df['temporal_id'], 70)
+                safe_mask = train_df['temporal_id'] <= percentile_70
+                safe_data = train_df[safe_mask].copy()
+            
+            print(f"시간적 필터링: {len(train_df)} → {len(safe_data)} ({len(safe_data)/len(train_df):.1%})")
+            
+            return safe_data if len(safe_data) > 8000 else train_df
+            
+        except Exception as e:
+            print(f"시간적 필터링 오류: {e}")
+            return train_df
     
     def detect_outliers_simple(self, train_df):
-        """단순한 이상치 탐지"""
+        """이상치 탐지"""
         numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         available_cols = [col for col in numeric_cols if col in train_df.columns]
         
         if len(available_cols) < 3:
             return train_df
         
-        X_numeric = train_df[available_cols].fillna(0)
-        
-        # Isolation Forest (간소화)
         try:
+            X_numeric = train_df[available_cols].fillna(0)
+            
+            # Isolation Forest
             iso_forest = IsolationForest(
-                contamination=0.02,  # 2% 이상치
+                contamination=0.02,
                 random_state=42,
                 n_jobs=1
             )
@@ -90,130 +95,162 @@ class DataPreprocessor:
             
             return clean_data if len(clean_data) > len(train_df) * 0.9 else train_df
             
-        except Exception:
+        except Exception as e:
+            print(f"이상치 탐지 오류: {e}")
             return train_df
     
     def handle_missing_values_simple(self, train_df, test_df):
-        """단순한 결측치 처리"""
-        train_clean = self.safe_data_conversion(train_df)
-        test_clean = self.safe_data_conversion(test_df)
-        
-        # 수치형 변수 - 중앙값으로 대체
-        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
-        common_numeric = [col for col in numeric_cols if col in train_clean.columns and col in test_clean.columns]
-        
-        for col in common_numeric:
-            if col not in self.imputers:
-                self.imputers[col] = train_clean[col].median()
+        """결측치 처리"""
+        try:
+            train_clean = self.safe_data_conversion(train_df)
+            test_clean = self.safe_data_conversion(test_df)
             
-            train_clean[col].fillna(self.imputers[col], inplace=True)
-            test_clean[col].fillna(self.imputers[col], inplace=True)
-        
-        # 범주형 변수 - 최빈값으로 대체
-        categorical_cols = ['gender', 'subscription_type']
-        
-        for col in categorical_cols:
-            if col in train_clean.columns and col in test_clean.columns:
+            # 수치형 변수 - 중앙값으로 대체
+            numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+            common_numeric = [col for col in numeric_cols if col in train_clean.columns and col in test_clean.columns]
+            
+            for col in common_numeric:
                 if col not in self.imputers:
-                    mode_val = train_clean[col].mode()
-                    self.imputers[col] = mode_val.iloc[0] if len(mode_val) > 0 else 'Unknown'
+                    median_val = train_clean[col].median()
+                    self.imputers[col] = median_val if not pd.isna(median_val) else 0
                 
                 train_clean[col].fillna(self.imputers[col], inplace=True)
                 test_clean[col].fillna(self.imputers[col], inplace=True)
-        
-        # 생성된 피처들도 처리
-        for col in train_clean.columns:
-            if col not in ['ID', 'support_needs'] and col not in common_numeric + categorical_cols:
-                if train_clean[col].dtype in ['float64', 'int64']:
-                    median_val = train_clean[col].median()
-                    train_clean[col].fillna(median_val, inplace=True)
-                    if col in test_clean.columns:
-                        test_clean[col].fillna(median_val, inplace=True)
-        
-        return train_clean, test_clean
+            
+            # 범주형 변수 - 최빈값으로 대체
+            categorical_cols = ['gender', 'subscription_type']
+            
+            for col in categorical_cols:
+                if col in train_clean.columns and col in test_clean.columns:
+                    if col not in self.imputers:
+                        mode_val = train_clean[col].mode()
+                        self.imputers[col] = mode_val.iloc[0] if len(mode_val) > 0 else 'Unknown'
+                    
+                    train_clean[col].fillna(self.imputers[col], inplace=True)
+                    test_clean[col].fillna(self.imputers[col], inplace=True)
+            
+            # 생성된 피처들도 처리
+            for col in train_clean.columns:
+                if col not in ['ID', 'support_needs'] and col not in common_numeric + categorical_cols:
+                    if train_clean[col].dtype in ['float64', 'int64']:
+                        if col in train_clean.columns and train_clean[col].isnull().sum() > 0:
+                            median_val = train_clean[col].median()
+                            fill_val = median_val if not pd.isna(median_val) else 0
+                            train_clean[col].fillna(fill_val, inplace=True)
+                            if col in test_clean.columns:
+                                test_clean[col].fillna(fill_val, inplace=True)
+            
+            return train_clean, test_clean
+            
+        except Exception as e:
+            print(f"결측치 처리 오류: {e}")
+            return train_df, test_df
     
-    def select_features_simple(self, train_df, max_features=65):  # 50 → 65으로 증가
-        """단순한 피처 선택"""
+    def select_features_simple(self, train_df, max_features=65):
+        """피처 선택"""
         if 'support_needs' not in train_df.columns:
             feature_cols = [col for col in train_df.columns if col not in ['ID']]
             return feature_cols[:min(max_features, len(feature_cols))]
         
-        feature_cols = [col for col in train_df.columns if col not in ['ID', 'support_needs']]
-        
-        if len(feature_cols) <= max_features:
-            self.selected_features = feature_cols
-            return feature_cols
-        
-        X = train_df[feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
-        y = np.clip(train_df['support_needs'], 0, 2)
-        
-        # 분산 필터링
-        variance_selector = VarianceThreshold(threshold=0.01)  # 더 엄격한 기준
-        X_variance = variance_selector.fit_transform(X)
-        variance_features = [feature_cols[i] for i, selected in enumerate(variance_selector.get_support()) if selected]
-        
-        if len(variance_features) <= max_features:
-            self.selected_features = variance_features
-            return variance_features
-        
-        # 상호정보량 기반 선택
-        X_var_df = pd.DataFrame(X_variance, columns=variance_features)
-        mi_scores = mutual_info_classif(X_var_df, y, random_state=42)
-        
-        feature_scores = list(zip(variance_features, mi_scores))
-        feature_scores.sort(key=lambda x: x[1], reverse=True)
-        
-        selected_features = [f[0] for f in feature_scores[:max_features]]
-        
-        self.selected_features = selected_features
-        return selected_features
+        try:
+            feature_cols = [col for col in train_df.columns if col not in ['ID', 'support_needs']]
+            
+            if len(feature_cols) <= max_features:
+                self.selected_features = feature_cols
+                return feature_cols
+            
+            X = train_df[feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
+            y = np.clip(train_df['support_needs'], 0, 2)
+            
+            # 분산 필터링
+            variance_selector = VarianceThreshold(threshold=0.01)
+            X_variance = variance_selector.fit_transform(X)
+            variance_features = [feature_cols[i] for i, selected in enumerate(variance_selector.get_support()) if selected]
+            
+            if len(variance_features) <= max_features:
+                self.selected_features = variance_features
+                return variance_features
+            
+            # 상호정보량 기반 선택
+            X_var_df = pd.DataFrame(X_variance, columns=variance_features)
+            mi_scores = mutual_info_classif(X_var_df, y, random_state=42)
+            
+            feature_scores = list(zip(variance_features, mi_scores))
+            feature_scores.sort(key=lambda x: x[1], reverse=True)
+            
+            selected_features = [f[0] for f in feature_scores[:max_features]]
+            
+            self.selected_features = selected_features
+            return selected_features
+            
+        except Exception as e:
+            print(f"피처 선택 오류: {e}")
+            # 기본 피처 반환
+            basic_features = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length', 'gender', 'subscription_type']
+            available_features = [f for f in basic_features if f in train_df.columns]
+            return available_features[:max_features]
     
     def apply_scaling_simple(self, train_df, test_df):
-        """단순한 스케일링"""
-        train_clean = self.safe_data_conversion(train_df)
-        test_clean = self.safe_data_conversion(test_df)
-        
-        numeric_cols = [col for col in train_clean.select_dtypes(include=[np.number]).columns 
-                        if col not in ['ID', 'support_needs']]
-        
-        common_numeric = [col for col in numeric_cols if col in test_clean.columns]
-        
-        if not common_numeric:
+        """스케일링"""
+        try:
+            train_clean = self.safe_data_conversion(train_df)
+            test_clean = self.safe_data_conversion(test_df)
+            
+            numeric_cols = [col for col in train_clean.select_dtypes(include=[np.number]).columns 
+                            if col not in ['ID', 'support_needs']]
+            
+            common_numeric = [col for col in numeric_cols if col in test_clean.columns]
+            
+            if not common_numeric:
+                return train_clean, test_clean
+            
+            # RobustScaler 사용
+            if 'robust' not in self.scalers:
+                self.scalers['robust'] = RobustScaler()
+                train_values = train_clean[common_numeric].values
+                train_values = np.nan_to_num(train_values, nan=0.0, posinf=0.0, neginf=0.0)
+                train_scaled = self.scalers['robust'].fit_transform(train_values)
+            else:
+                train_values = train_clean[common_numeric].values
+                train_values = np.nan_to_num(train_values, nan=0.0, posinf=0.0, neginf=0.0)
+                train_scaled = self.scalers['robust'].transform(train_values)
+            
+            test_values = test_clean[common_numeric].values
+            test_values = np.nan_to_num(test_values, nan=0.0, posinf=0.0, neginf=0.0)
+            test_scaled = self.scalers['robust'].transform(test_values)
+            
+            train_clean[common_numeric] = train_scaled
+            test_clean[common_numeric] = test_scaled
+            
             return train_clean, test_clean
-        
-        # RobustScaler 사용 (간단하고 안정적)
-        if 'robust' not in self.scalers:
-            self.scalers['robust'] = RobustScaler()
-            train_scaled = self.scalers['robust'].fit_transform(train_clean[common_numeric])
-        else:
-            train_scaled = self.scalers['robust'].transform(train_clean[common_numeric])
-        
-        test_scaled = self.scalers['robust'].transform(test_clean[common_numeric])
-        
-        train_clean[common_numeric] = train_scaled
-        test_clean[common_numeric] = test_scaled
-        
-        return train_clean, test_clean
+            
+        except Exception as e:
+            print(f"스케일링 오류: {e}")
+            return train_df, test_df
     
     def apply_dimensionality_reduction_simple(self, train_df, test_df):
-        """단순한 차원 축소"""
+        """차원 축소"""
         if 'support_needs' not in train_df.columns:
             return train_df, test_df
         
-        feature_cols = [col for col in train_df.columns if col not in ['ID', 'support_needs']]
-        
-        if len(feature_cols) < 20:  # 피처가 적으면 스킵
-            return train_df, test_df
-        
-        X_train = train_df[feature_cols].fillna(0)
-        X_test = test_df[feature_cols].fillna(0)
-        
-        train_enhanced = train_df.copy()
-        test_enhanced = test_df.copy()
-        
-        # PCA만 사용 (간소화)
         try:
-            n_components = min(10, len(feature_cols) // 5)  # 더 적은 컴포넌트
+            feature_cols = [col for col in train_df.columns if col not in ['ID', 'support_needs']]
+            
+            if len(feature_cols) < 20:
+                return train_df, test_df
+            
+            X_train = train_df[feature_cols].fillna(0)
+            X_test = test_df[feature_cols].fillna(0)
+            
+            # 무한값 처리
+            X_train = X_train.replace([np.inf, -np.inf], 0)
+            X_test = X_test.replace([np.inf, -np.inf], 0)
+            
+            train_enhanced = train_df.copy()
+            test_enhanced = test_df.copy()
+            
+            # PCA 적용
+            n_components = min(10, len(feature_cols) // 5)
             
             if 'pca' not in self.scalers:
                 self.scalers['pca'] = PCA(n_components=n_components, random_state=42)
@@ -228,144 +265,164 @@ class DataPreprocessor:
                 train_enhanced[f'pca_{i}'] = pca_train[:, i]
                 test_enhanced[f'pca_{i}'] = pca_test[:, i]
                 
-        except Exception:
-            pass
-        
-        return train_enhanced, test_enhanced
+            return train_enhanced, test_enhanced
+            
+        except Exception as e:
+            print(f"차원 축소 오류: {e}")
+            return train_df, test_df
     
     def validate_data_quality(self, train_df, test_df):
         """데이터 품질 검증"""
-        issues = []
-        
-        # 훈련 데이터 수치형 컬럼
-        train_numeric_cols = train_df.select_dtypes(include=[np.number]).columns
-        test_numeric_cols = test_df.select_dtypes(include=[np.number]).columns
-        
-        # 무한값 확인
-        train_inf = np.isinf(train_df[train_numeric_cols]).sum().sum()
-        test_inf = np.isinf(test_df[test_numeric_cols]).sum().sum()
-        
-        if train_inf > 0:
-            issues.append(f"train_infinite_values: {train_inf}")
-        if test_inf > 0:
-            issues.append(f"test_infinite_values: {test_inf}")
-        
-        # 결측치 확인
-        train_nan = train_df[train_numeric_cols].isnull().sum().sum()
-        test_nan = test_df[test_numeric_cols].isnull().sum().sum()
-        
-        if train_nan > 0:
-            issues.append(f"train_missing_values: {train_nan}")
-        if test_nan > 0:
-            issues.append(f"test_missing_values: {test_nan}")
-        
-        return len(issues) == 0, issues
+        try:
+            issues = []
+            
+            # 무한값 확인
+            train_numeric_cols = train_df.select_dtypes(include=[np.number]).columns
+            test_numeric_cols = test_df.select_dtypes(include=[np.number]).columns
+            
+            train_inf = np.isinf(train_df[train_numeric_cols]).sum().sum()
+            test_inf = np.isinf(test_df[test_numeric_cols]).sum().sum()
+            
+            if train_inf > 0:
+                issues.append(f"train_infinite_values: {train_inf}")
+            if test_inf > 0:
+                issues.append(f"test_infinite_values: {test_inf}")
+            
+            # 결측치 확인
+            train_nan = train_df[train_numeric_cols].isnull().sum().sum()
+            test_nan = test_df[test_numeric_cols].isnull().sum().sum()
+            
+            if train_nan > 0:
+                issues.append(f"train_missing_values: {train_nan}")
+            if test_nan > 0:
+                issues.append(f"test_missing_values: {test_nan}")
+            
+            return len(issues) == 0, issues
+            
+        except Exception as e:
+            print(f"품질 검증 오류: {e}")
+            return True, []
     
     def process_data(self, train_df, test_df, temporal_info=None):
-        """단순화된 전처리 파이프라인"""
+        """데이터 전처리 파이프라인"""
         if train_df is None or test_df is None or train_df.empty or test_df.empty:
             return None, None
         
         print("전처리 시작:")
         
-        # 시간적 필터링
-        if temporal_info is not None:
-            train_df = self.apply_temporal_filtering(train_df, temporal_info)
-        
-        # 이상치 탐지 및 제거 (간소화)
-        train_df = self.detect_outliers_simple(train_df)
-        
-        # 결측치 처리 (간소화)
-        train_df, test_df = self.handle_missing_values_simple(train_df, test_df)
-        
-        # 피처 선택 (축소)
-        if 'support_needs' in train_df.columns:
-            selected_features = self.select_features_simple(train_df, max_features=50)
+        try:
+            # 시간적 필터링
+            if temporal_info is not None:
+                train_df = self.apply_temporal_filtering(train_df, temporal_info)
             
-            keep_cols_train = ['ID', 'support_needs'] + selected_features
-            keep_cols_test = ['ID'] + [f for f in selected_features if f in test_df.columns]
+            # 이상치 탐지 및 제거
+            train_df = self.detect_outliers_simple(train_df)
             
-            # 존재하는 컬럼만 선택
-            available_train_cols = [col for col in keep_cols_train if col in train_df.columns]
-            available_test_cols = [col for col in keep_cols_test if col in test_df.columns]
+            # 결측치 처리
+            train_df, test_df = self.handle_missing_values_simple(train_df, test_df)
             
-            train_df = train_df[available_train_cols]
-            test_df = test_df[available_test_cols]
-        
-        # 스케일링 (간소화)
-        train_df, test_df = self.apply_scaling_simple(train_df, test_df)
-        
-        # 차원 축소 (간소화) - 피처가 많을 때만
-        if len(train_df.columns) > 30:
-            train_df, test_df = self.apply_dimensionality_reduction_simple(train_df, test_df)
-        
-        # 품질 검증
-        quality_ok, issues = self.validate_data_quality(train_df, test_df)
-        if not quality_ok:
-            print(f"데이터 품질 문제: {len(issues)}개")
-        
-        print("✓ 전처리 완료")
-        
-        return train_df, test_df
+            # 피처 선택
+            if 'support_needs' in train_df.columns:
+                selected_features = self.select_features_simple(train_df, max_features=50)
+                
+                keep_cols_train = ['ID', 'support_needs'] + selected_features
+                keep_cols_test = ['ID'] + [f for f in selected_features if f in test_df.columns]
+                
+                # 존재하는 컬럼만 선택
+                available_train_cols = [col for col in keep_cols_train if col in train_df.columns]
+                available_test_cols = [col for col in keep_cols_test if col in test_df.columns]
+                
+                train_df = train_df[available_train_cols]
+                test_df = test_df[available_test_cols]
+            
+            # 스케일링
+            train_df, test_df = self.apply_scaling_simple(train_df, test_df)
+            
+            # 차원 축소 (피처가 많을 때만)
+            if len(train_df.columns) > 30:
+                train_df, test_df = self.apply_dimensionality_reduction_simple(train_df, test_df)
+            
+            # 품질 검증
+            quality_ok, issues = self.validate_data_quality(train_df, test_df)
+            if not quality_ok:
+                print(f"데이터 품질 문제: {len(issues)}개")
+            
+            print("✓ 전처리 완료")
+            
+            return train_df, test_df
+            
+        except Exception as e:
+            print(f"전처리 파이프라인 오류: {e}")
+            return None, None
     
-    def prepare_data_temporal_optimized(self, train_df, test_df, val_size=0.2, gap_size=0.01):  # 검증 크기 증가
-        """최적화된 데이터 준비"""
+    def prepare_data_temporal_optimized(self, train_df, test_df, val_size=0.2, gap_size=0.01):
+        """데이터 준비"""
         if train_df is None or test_df is None:
             return None, None, None, None, None, None
             
-        if 'support_needs' not in train_df.columns:
-            # 타겟이 없는 경우 기본 분할
-            feature_cols = [col for col in train_df.columns if col not in ['ID']]
-            common_features = [col for col in feature_cols if col in test_df.columns]
+        try:
+            if 'support_needs' not in train_df.columns:
+                # 타겟이 없는 경우 기본 분할
+                feature_cols = [col for col in train_df.columns if col not in ['ID']]
+                common_features = [col for col in feature_cols if col in test_df.columns]
+                
+                if not common_features:
+                    raise ValueError("공통 피처 없음")
+                    
+                X_train = train_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+                X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+                test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
+                
+                # 더미 분할
+                X_train_split, X_val_split, y_dummy, y_val_dummy = train_test_split(
+                    X_train, np.zeros(len(X_train)), test_size=val_size, random_state=42
+                )
+                
+                return X_train_split, X_val_split, y_dummy[:len(X_train_split)], y_val_dummy, X_test, test_ids
+            
+            # 공통 피처 식별
+            train_cols = set(train_df.columns)
+            test_cols = set(test_df.columns)
+            common_features = list((train_cols & test_cols) - {'ID', 'support_needs'})
             
             if not common_features:
                 raise ValueError("공통 피처 없음")
-                
-            X_train = train_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+            
+            common_features = sorted(common_features)
+            
+            X = train_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
+            y = np.clip(train_df['support_needs'], 0, 2)
             X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
             test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
             
-            # 더미 분할
-            X_train_split, X_val_split, y_dummy, y_val_dummy = train_test_split(
-                X_train, np.zeros(len(X_train)), test_size=val_size, random_state=42
-            )
-            
-            return X_train_split, X_val_split, y_dummy[:len(X_train_split)], y_val_dummy, X_test, test_ids
-        
-        # 공통 피처 식별
-        train_cols = set(train_df.columns)
-        test_cols = set(test_df.columns)
-        common_features = list((train_cols & test_cols) - {'ID', 'support_needs'})
-        
-        if not common_features:
-            raise ValueError("공통 피처 없음")
-        
-        common_features = sorted(common_features)
-        
-        X = train_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
-        y = np.clip(train_df['support_needs'], 0, 2)
-        X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
-        test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
-        
-        # 시간 기반 분할 (단순화)
-        if 'temporal_id' in X.columns and len(X) > 2000:
-            temporal_ids = X['temporal_id'].values
-            sorted_indices = np.argsort(temporal_ids)
-            
-            total_samples = len(sorted_indices)
-            gap_samples = int(total_samples * gap_size)
-            val_samples = int(total_samples * val_size)
-            train_samples = total_samples - val_samples - gap_samples
-            
-            if train_samples > 1000 and val_samples > 500:
-                # 시간 순서 분할
-                train_indices = sorted_indices[:train_samples]
-                val_indices = sorted_indices[train_samples + gap_samples:]
+            # 시간 기반 분할
+            if 'temporal_id' in X.columns and len(X) > 2000:
+                temporal_ids = X['temporal_id'].values
+                sorted_indices = np.argsort(temporal_ids)
                 
-                X_train = X.iloc[train_indices]
-                X_val = X.iloc[val_indices]
-                y_train = y.iloc[train_indices]
-                y_val = y.iloc[val_indices]
+                total_samples = len(sorted_indices)
+                gap_samples = int(total_samples * gap_size)
+                val_samples = int(total_samples * val_size)
+                train_samples = total_samples - val_samples - gap_samples
+                
+                if train_samples > 1000 and val_samples > 500:
+                    # 시간 순서 분할
+                    train_indices = sorted_indices[:train_samples]
+                    val_indices = sorted_indices[train_samples + gap_samples:]
+                    
+                    X_train = X.iloc[train_indices]
+                    X_val = X.iloc[val_indices]
+                    y_train = y.iloc[train_indices]
+                    y_val = y.iloc[val_indices]
+                else:
+                    # 계층화 분할
+                    sss = StratifiedShuffleSplit(n_splits=1, test_size=val_size, random_state=42)
+                    train_idx, val_idx = next(sss.split(X, y))
+                    
+                    X_train = X.iloc[train_idx]
+                    X_val = X.iloc[val_idx]
+                    y_train = y.iloc[train_idx]
+                    y_val = y.iloc[val_idx]
             else:
                 # 계층화 분할
                 sss = StratifiedShuffleSplit(n_splits=1, test_size=val_size, random_state=42)
@@ -375,17 +432,12 @@ class DataPreprocessor:
                 X_val = X.iloc[val_idx]
                 y_train = y.iloc[train_idx]
                 y_val = y.iloc[val_idx]
-        else:
-            # 계층화 분할
-            sss = StratifiedShuffleSplit(n_splits=1, test_size=val_size, random_state=42)
-            train_idx, val_idx = next(sss.split(X, y))
             
-            X_train = X.iloc[train_idx]
-            X_val = X.iloc[val_idx]
-            y_train = y.iloc[train_idx]
-            y_val = y.iloc[val_idx]
-        
-        return X_train, X_val, y_train, y_val, X_test, test_ids
+            return X_train, X_val, y_train, y_val, X_test, test_ids
+            
+        except Exception as e:
+            print(f"데이터 준비 오류: {e}")
+            return None, None, None, None, None, None
 
 def main():
     try:
