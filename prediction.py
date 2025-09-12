@@ -169,9 +169,9 @@ class PredictionSystem:
                     self.class_weights[i] = 1.0
             
             # 훈련 분포 기반 조정: 클래스 0(46.3%), 클래스 1(26.9%), 클래스 2(26.8%)
-            self.class_weights[0] *= 0.70  # 클래스 0 가중치를 크게 감소
-            self.class_weights[1] *= 1.25  # 클래스 1 가중치 증가
-            self.class_weights[2] *= 1.45  # 클래스 2 가중치를 크게 증가
+            self.class_weights[0] *= 0.90  # 클래스 0 가중치 감소
+            self.class_weights[1] *= 1.15  # 클래스 1 가중치 증가
+            self.class_weights[2] *= 1.18  # 클래스 2 가중치 증가
             
             # 여러 대체 모델 학습
             self.models['fallback_rf'] = RandomForestClassifier(

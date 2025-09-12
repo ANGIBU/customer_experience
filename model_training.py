@@ -395,40 +395,35 @@ class ModelTrainer:
                 accuracy = accuracy_score(y_val_clean, y_pred)
                 f1 = f1_score(y_val_clean, y_pred, average='macro')
                 
-                # 클래스 0 재현율에 높은 가중치
-                class_0_recall = np.sum((y_pred == 0) & (y_val_clean == 0)) / np.sum(y_val_clean == 0) if np.sum(y_val_clean == 0) > 0 else 0
+                # 클래스 0 재현율 보너스
+                class_0_recall = np.sum((y_pred == 0) & (y_val_clean == 0)) / np.sum(y_val_clean == 0)
                 
-                # 클래스 0 정밀도도 고려
-                class_0_precision = np.sum((y_pred == 0) & (y_val_clean == 0)) / np.sum(y_pred == 0) if np.sum(y_pred == 0) > 0 else 0
-                
-                # 클래스 0 성능에 매우 높은 가중치
-                combined_score = 0.3 * accuracy + 0.2 * f1 + 0.35 * class_0_recall + 0.15 * class_0_precision
+                combined_score = 0.6 * accuracy + 0.3 * f1 + 0.1 * class_0_recall
                 model_scores[name] = combined_score
                 
             except Exception:
                 model_scores[name] = 0.0
         
-        # 클래스 0 예측에 강한 모델 우선순위
+        # 새로운 가중치 분배 (클래스 0 예측에 강한 모델 선호)
         base_weights = {
-            'lightgbm': 0.32,
-            'xgboost': 0.28,
-            'catboost': 0.22,
-            'random_forest': 0.10,
-            'extra_trees': 0.04,
+            'lightgbm': 0.28,
+            'xgboost': 0.26,
+            'catboost': 0.24,
+            'random_forest': 0.12,
+            'extra_trees': 0.05,
             'gradient_boosting': 0.03,
-            'neural_network': 0.008,
-            'logistic_regression': 0.002
+            'neural_network': 0.015,
+            'logistic_regression': 0.005
         }
         
-        # 성능 기반 조정 (클래스 0 성능 중심)
+        # 성능 기반 조정
         total_score = sum(model_scores.values())
         if total_score > 0:
             for name in model_scores:
                 if name in base_weights:
                     performance_ratio = model_scores[name] / total_score
                     base_weight = base_weights[name]
-                    # 클래스 0 성능이 좋은 모델에 더 높은 가중치
-                    self.ensemble_weights[name] = 0.6 * base_weight + 0.4 * performance_ratio
+                    self.ensemble_weights[name] = 0.75 * base_weight + 0.25 * performance_ratio
         else:
             self.ensemble_weights = {k: v for k, v in base_weights.items() if k in self.models}
         
