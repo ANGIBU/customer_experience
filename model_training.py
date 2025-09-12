@@ -40,7 +40,7 @@ class ModelTrainer:
             else:
                 weights[i] = 1.0
         
-        # 클래스 불균형 보정 강화
+        # 클래스 불균형 보정
         weights[1] *= 1.25
         weights[2] *= 1.15
         
@@ -488,8 +488,17 @@ class ModelTrainer:
             
             best_model = max(valid_results.items(), key=lambda x: x[1])
             print(f"✓ 최고 성능: {best_model[1]:.4f} ({best_model[0]})")
+            
+            if best_model[1] >= 0.48:
+                print("✓ 내부 검증 통과")
+            else:
+                gap = 0.48 - best_model[1]
+                print(f"→ 목표까지: {gap:.4f}")
+            
             print(f"✓ 성공 모델: {len(valid_results)}개")
             print(f"✓ 저장된 모델: {saved_count}")
+        
+        print("✓ 모델 학습 완료")
         
         return valid_results
 

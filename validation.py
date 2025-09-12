@@ -76,10 +76,10 @@ class ValidationSystem:
         return len(issues) == 0, issues
     
     def create_simple_validation_model(self, X_train, y_train):
-        """검증용 모델 (더 보수적으로)"""
+        """검증용 모델"""
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         
-        # 클래스 가중치 계산 (더 보수적으로)
+        # 클래스 가중치 계산
         class_counts = np.bincount(y_train_clean.astype(int))
         total_samples = len(y_train_clean)
         class_weights = {}
@@ -90,17 +90,17 @@ class ValidationSystem:
             else:
                 class_weights[i] = 1.0
         
-        # 클래스 불균형 보정 (더 보수적으로)
-        class_weights[1] *= 1.10  # 1.15 → 1.10
-        class_weights[2] *= 1.05  # 1.09 → 1.05
+        # 클래스 불균형 보정
+        class_weights[1] *= 1.08
+        class_weights[2] *= 1.04
         
-        # Random Forest (더 보수적 파라미터)
+        # Random Forest
         model = RandomForestClassifier(
-            n_estimators=80,   # 100 → 80으로 감소
-            max_depth=7,       # 8 → 7로 감소
-            min_samples_split=12,   # 10 → 12로 증가
-            min_samples_leaf=6,     # 5 → 6으로 증가
-            max_features=0.7,       # 0.8 → 0.7로 감소
+            n_estimators=70,
+            max_depth=6,
+            min_samples_split=15,
+            min_samples_leaf=8,
+            max_features=0.6,
             class_weight=class_weights,
             random_state=42,
             n_jobs=1
@@ -110,7 +110,7 @@ class ValidationSystem:
         return model
     
     def simple_cross_validation(self, X, y, n_splits=3):
-        """교차검증 (더 보수적으로)"""
+        """교차검증"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
         # temporal_id 제거
@@ -147,7 +147,7 @@ class ValidationSystem:
         }
     
     def holdout_validation_simple(self, X_train, y_train, X_val, y_val):
-        """홀드아웃 검증 (더 보수적으로)"""
+        """홀드아웃 검증"""
         if any(data is None for data in [X_train, y_train, X_val, y_val]):
             return self.get_default_holdout_results()
         
@@ -185,7 +185,7 @@ class ValidationSystem:
             return self.get_default_holdout_results()
     
     def stability_test_simple(self, X, y, n_runs=5):
-        """안정성 테스트 (더 보수적으로)"""
+        """안정성 테스트"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
         # temporal_id 제거
@@ -204,7 +204,7 @@ class ValidationSystem:
             try:
                 X_train, X_val, y_train, y_val = train_test_split(
                     X_temp, y_clean, 
-                    test_size=0.3,    # 0.25 → 0.3으로 증가 (더 엄격한 테스트)
+                    test_size=0.35,
                     random_state=run * 13, 
                     stratify=y_clean
                 )
@@ -230,9 +230,9 @@ class ValidationSystem:
         mean_f1 = np.mean(f1_scores)
         std_f1 = np.std(f1_scores)
         
-        # 안정성 점수 (더 엄격하게)
-        accuracy_stability = max(0, 1 - (std_accuracy / mean_accuracy * 1.2)) if mean_accuracy > 0 else 0  # 페널티 증가
-        f1_stability = max(0, 1 - (std_f1 / mean_f1 * 1.2)) if mean_f1 > 0 else 0  # 페널티 증가
+        # 안정성 점수
+        accuracy_stability = max(0, 1 - (std_accuracy / mean_accuracy * 1.5)) if mean_accuracy > 0 else 0
+        f1_stability = max(0, 1 - (std_f1 / mean_f1 * 1.5)) if mean_f1 > 0 else 0
         
         overall_stability = (accuracy_stability * 0.6 + f1_stability * 0.4)
         
@@ -308,7 +308,7 @@ class ValidationSystem:
         }
     
     def validate_system(self, X_train, y_train, X_val=None, y_val=None):
-        """검증 시스템 (보수적으로 수정됨)"""
+        """검증 시스템"""
         if X_train is None or y_train is None or len(X_train) == 0:
             return self.get_comprehensive_default_results()
         
@@ -322,11 +322,11 @@ class ValidationSystem:
             from sklearn.model_selection import train_test_split
             try:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.25, random_state=42, stratify=y_clean  # 0.2 → 0.25로 증가
+                    X_clean, y_clean, test_size=0.30, random_state=42, stratify=y_clean
                 )
             except:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.25, random_state=42
+                    X_clean, y_clean, test_size=0.30, random_state=42
                 )
             holdout_results = self.holdout_validation_simple(X_train_split, y_train_split, X_val_split, y_val_split)
         
@@ -339,20 +339,20 @@ class ValidationSystem:
         # 피처 중요도 검증
         feature_results = self.feature_importance_validation_simple(X_train, y_train)
         
-        # 종합 점수 계산 (더 보수적으로 조정)
+        # 종합 점수 계산
         holdout_score = holdout_results.get('accuracy', 0.0)
         cv_score = cv_results.get('mean_score', 0.0)
         stability_score = stability_results.get('overall_stability', 0.0)
         
-        # 가중 평균으로 종합 점수 (더 보수적으로 조정)
+        # 가중 평균으로 종합 점수
         overall_score = (
-            holdout_score * 0.40 +      # 홀드아웃 가중치 감소
-            cv_score * 0.35 +           # 교차검증 가중치 증가  
-            stability_score * 0.25      # 안정성 가중치 증가
+            holdout_score * 0.35 +
+            cv_score * 0.40 +
+            stability_score * 0.25
         )
         
-        # 보수적 페널티 적용 (실제 성능과의 격차 고려)
-        conservative_penalty = 0.95  # 5% 보수적 조정
+        # 보수적 페널티 적용
+        conservative_penalty = 0.88
         overall_score = overall_score * conservative_penalty
         
         self.validation_results = {
@@ -366,7 +366,7 @@ class ValidationSystem:
                 'cv_ensemble_score': cv_score,
                 'stability_score': stability_score
             },
-            'conservative_adjustment': True,  # 보수적 조정 적용됨을 표시
+            'conservative_adjustment': True,
             'penalty_applied': conservative_penalty
         }
         
@@ -386,7 +386,7 @@ class ValidationSystem:
                 'stability_score': 0.0
             },
             'conservative_adjustment': True,
-            'penalty_applied': 0.95
+            'penalty_applied': 0.88
         }
 
 def main():
