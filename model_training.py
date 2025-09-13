@@ -40,12 +40,10 @@ class ModelTrainer:
             else:
                 weights[i] = 1.0
         
-        # 실제 분포에 맞춘 조정
-        # 클래스 0이 46.3%로 가장 많으므로 가중치 감소
-        # 클래스 1,2가 각각 26.9%, 26.8%로 비슷하므로 약간 증가
-        weights[0] *= 0.85  # 클래스 0 가중치 감소
-        weights[1] *= 1.20  # 클래스 1 가중치 증가
-        weights[2] *= 1.22  # 클래스 2 가중치 약간 더 증가
+        # 분포 균형 조정 (클래스 0 과다 예측 방지)
+        weights[0] *= 0.65  # 클래스 0 가중치 대폭 감소
+        weights[1] *= 1.45  # 클래스 1 가중치 대폭 증가
+        weights[2] *= 1.40  # 클래스 2 가중치 대폭 증가
         
         self.class_weights = weights
         return weights
