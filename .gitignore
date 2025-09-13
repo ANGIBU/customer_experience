@@ -1,9 +1,38 @@
+# .gitignore
+
 # 모든 파일 기본 제외
 *
 
-# 허용할 파일만 추가
+# 파이썬 관련 파일만 허용
 !*.py
 !requirements.txt
 
 # .gitignore 파일은 항상 포함
 !.gitignore
+
+# 데이터 파일 명시적 제외
+*.csv
+sample_submission.csv
+test.csv
+train.csv
+
+# 디렉터리 명시적 제외
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+logs/
+models/
+output/
+catboost_info/
+prompt/
+
+# VSCode 설정 및 확장 파일 제외
+.vscode/
+
+# 기타 제외 항목
+*.log
+*.tmp
+.env
+.DS_Store
