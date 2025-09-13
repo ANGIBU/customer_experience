@@ -40,10 +40,10 @@ class ModelTrainer:
             else:
                 weights[i] = 1.0
         
-        # 분포 균형 조정 (클래스 0 과다 예측 방지)
-        weights[0] *= 0.65  # 클래스 0 가중치 대폭 감소
-        weights[1] *= 1.45  # 클래스 1 가중치 대폭 증가
-        weights[2] *= 1.40  # 클래스 2 가중치 대폭 증가
+        # 균형잡힌 분포 조정
+        weights[0] *= 0.95  # 클래스 0 약간 감소
+        weights[1] *= 1.08  # 클래스 1 약간 증가
+        weights[2] *= 1.10  # 클래스 2 약간 증가
         
         self.class_weights = weights
         return weights

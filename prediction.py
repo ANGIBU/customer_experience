@@ -168,10 +168,10 @@ class PredictionSystem:
                 else:
                     self.class_weights[i] = 1.0
             
-            # 분포 균형 조정
-            self.class_weights[0] *= 0.60  # 클래스 0 가중치 대폭 감소
-            self.class_weights[1] *= 1.50  # 클래스 1 가중치 대폭 증가
-            self.class_weights[2] *= 1.45  # 클래스 2 가중치 대폭 증가
+            # 균형잡힌 가중치 조정
+            self.class_weights[0] *= 0.92  # 클래스 0 약간 감소
+            self.class_weights[1] *= 1.12  # 클래스 1 약간 증가
+            self.class_weights[2] *= 1.10  # 클래스 2 약간 증가
             
             # 여러 대체 모델 학습
             self.models['fallback_rf'] = RandomForestClassifier(
