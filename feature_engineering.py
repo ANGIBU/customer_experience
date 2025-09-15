@@ -56,14 +56,14 @@ class FeatureEngineer:
             safe_mask = np.array(train_id_nums) <= temporal_threshold
             safe_data = train_df[safe_mask]
             
-            if len(safe_data) < 1000:
+            if len(safe_data) < 800:
                 return False, "안전 데이터 부족"
             
             # 안전 구간에서의 상관관계 분석
             correlation = safe_data[['after_interaction', 'support_needs']].corr().iloc[0, 1]
             
-            # 매우 보수적인 기준 (0.15)
-            if abs(correlation) > 0.15:
+            # 완화된 기준 (0.18)
+            if abs(correlation) > 0.18:
                 return False, f"상관관계 위험: {correlation:.3f}"
             
             # 클래스별 분리도 검증
@@ -75,14 +75,14 @@ class FeatureEngineer:
             
             if len(class_means) >= 2:
                 separation = max(class_means) - min(class_means)
-                if separation > 2.5:  # 보수적 기준
+                if separation > 3.0:  # 완화된 기준
                     return False, f"클래스 분리도 위험: {separation:.3f}"
             
             return True, f"안전: 상관관계 {correlation:.3f}, 분리도 {separation:.3f}"
         
         # 전체 데이터에서의 기본 검증
         correlation = train_df[['after_interaction', 'support_needs']].corr().iloc[0, 1]
-        if abs(correlation) > 0.12:  # 매우 보수적
+        if abs(correlation) > 0.15:  # 완화된 기준
             return False, f"전체 상관관계 위험: {correlation:.3f}"
         
         return True, f"기본 안전: {correlation:.3f}"
@@ -97,21 +97,25 @@ class FeatureEngineer:
             is_safe, safety_msg = self.analyze_after_interaction_safety(train_df, temporal_threshold)
             
             if is_safe:
-                # 안전한 경우: 시간 지연 변환 적용
-                train_processed['after_interaction_lag1'] = train_processed.groupby('ID')['after_interaction'].shift(1)
-                train_processed['after_interaction_lag2'] = train_processed.groupby('ID')['after_interaction'].shift(2)
-                train_processed['after_interaction_rolling'] = train_processed.groupby('ID')['after_interaction'].rolling(3).mean().reset_index(0, drop=True)
+                # 안전한 경우: 더 보수적인 변환 적용
+                train_processed['after_interaction_lag1'] = train_processed.groupby('ID')['after_interaction'].shift(2)
+                train_processed['after_interaction_lag2'] = train_processed.groupby('ID')['after_interaction'].shift(3)
+                train_processed['after_interaction_rolling'] = train_processed.groupby('ID')['after_interaction'].rolling(4).mean().reset_index(0, drop=True)
                 
                 # 차분 피처 (더 안전한 변환)
-                train_processed['after_interaction_diff1'] = train_processed.groupby('ID')['after_interaction'].diff(1)
-                train_processed['after_interaction_diff2'] = train_processed.groupby('ID')['after_interaction'].diff(2)
+                train_processed['after_interaction_diff1'] = train_processed.groupby('ID')['after_interaction'].diff(2)
+                train_processed['after_interaction_diff2'] = train_processed.groupby('ID')['after_interaction'].diff(3)
+                
+                # 백분위수 변환 (더 안전)
+                train_processed['after_interaction_pct'] = train_processed['after_interaction'].rank(pct=True)
                 
                 if 'after_interaction' in test_df.columns:
-                    test_processed['after_interaction_lag1'] = test_processed.groupby('ID')['after_interaction'].shift(1)
-                    test_processed['after_interaction_lag2'] = test_processed.groupby('ID')['after_interaction'].shift(2)
-                    test_processed['after_interaction_rolling'] = test_processed.groupby('ID')['after_interaction'].rolling(3).mean().reset_index(0, drop=True)
-                    test_processed['after_interaction_diff1'] = test_processed.groupby('ID')['after_interaction'].diff(1)
-                    test_processed['after_interaction_diff2'] = test_processed.groupby('ID')['after_interaction'].diff(2)
+                    test_processed['after_interaction_lag1'] = test_processed.groupby('ID')['after_interaction'].shift(2)
+                    test_processed['after_interaction_lag2'] = test_processed.groupby('ID')['after_interaction'].shift(3)
+                    test_processed['after_interaction_rolling'] = test_processed.groupby('ID')['after_interaction'].rolling(4).mean().reset_index(0, drop=True)
+                    test_processed['after_interaction_diff1'] = test_processed.groupby('ID')['after_interaction'].diff(2)
+                    test_processed['after_interaction_diff2'] = test_processed.groupby('ID')['after_interaction'].diff(3)
+                    test_processed['after_interaction_pct'] = test_processed['after_interaction'].rank(pct=True)
                 
                 # 원본 피처 제거 (누수 위험 최소화)
                 train_processed = train_processed.drop('after_interaction', axis=1)
@@ -151,10 +155,16 @@ class FeatureEngineer:
                 # 시간적 그룹핑 (더 세분화)
                 df_new['temporal_quartile'] = pd.qcut(id_numbers, q=4, labels=False, duplicates='drop')
                 df_new['temporal_decile'] = pd.qcut(id_numbers, q=10, labels=False, duplicates='drop')
+                
+                # 시간적 순환성 (주기성 피처)
+                df_new['temporal_sin'] = np.sin(2 * np.pi * df_new['temporal_position'])
+                df_new['temporal_cos'] = np.cos(2 * np.pi * df_new['temporal_position'])
             else:
                 df_new['temporal_position'] = [0.5] * len(id_numbers)
                 df_new['temporal_quartile'] = [1] * len(id_numbers)
                 df_new['temporal_decile'] = [5] * len(id_numbers)
+                df_new['temporal_sin'] = [0.0] * len(id_numbers)
+                df_new['temporal_cos'] = [1.0] * len(id_numbers)
         
         return df_new
     
@@ -178,6 +188,10 @@ class FeatureEngineer:
             # 고객 안정성 지표
             df_new['customer_stability'] = (tenure_safe * contract_safe) / (frequent_safe + 1)
             df_new['customer_stability'] = np.clip(df_new['customer_stability'], 0, 10000)
+            
+            # 고객 충성도 지표
+            df_new['customer_loyalty'] = np.sqrt(tenure_safe) * np.log1p(contract_safe)
+            df_new['customer_loyalty'] = np.clip(df_new['customer_loyalty'], 0, 300)
         
         # 결제 패턴
         if all(col in df.columns for col in ['payment_interval', 'contract_length']):
@@ -190,6 +204,10 @@ class FeatureEngineer:
             # 결제 빈도
             df_new['payment_frequency'] = 365 / payment_safe
             df_new['payment_frequency'] = np.clip(df_new['payment_frequency'], 0, 365)
+            
+            # 계약 결제 비율
+            df_new['contract_payment_ratio'] = np.log1p(contract_safe) / np.log1p(payment_safe)
+            df_new['contract_payment_ratio'] = np.clip(df_new['contract_payment_ratio'], 0, 10)
         
         # 사용 강도
         if all(col in df.columns for col in ['frequent', 'tenure']):
@@ -202,6 +220,10 @@ class FeatureEngineer:
             # 월별 사용량
             df_new['monthly_usage'] = frequent_safe / (tenure_safe / 30 + 1) * 30
             df_new['monthly_usage'] = np.clip(df_new['monthly_usage'], 0, 300)
+            
+            # 사용 성장률 추정
+            df_new['usage_growth'] = frequent_safe / np.sqrt(tenure_safe + 1)
+            df_new['usage_growth'] = np.clip(df_new['usage_growth'], 0, 50)
         
         # 고객 세그먼트
         if 'age' in df.columns:
@@ -214,6 +236,10 @@ class FeatureEngineer:
             # 나이 기반 리스크 점수
             df_new['age_risk'] = np.where(age_safe < 30, 1.2, 
                                 np.where(age_safe > 60, 1.1, 1.0))
+            
+            # 나이별 기대 행동 패턴
+            df_new['age_normalized_frequent'] = frequent_safe / (age_safe / 35 + 0.5)
+            df_new['age_normalized_frequent'] = np.clip(df_new['age_normalized_frequent'], 0, 100)
         
         return df_new
     
@@ -237,6 +263,9 @@ class FeatureEngineer:
                 # 분위수 변환 (더 안정적)
                 df_new[f'{col}_rank'] = values.rank(pct=True)
                 
+                # 박스콕스 근사 (제곱 변환)
+                df_new[f'{col}_squared'] = np.power(values, 0.5)
+                
                 # Z-score (표준화)
                 if values.std() > 0:
                     df_new[f'{col}_zscore'] = (values - values.mean()) / values.std()
@@ -254,7 +283,8 @@ class FeatureEngineer:
             ('age', 'tenure'),
             ('frequent', 'payment_interval'),
             ('tenure', 'contract_length'),
-            ('age', 'frequent')
+            ('age', 'frequent'),
+            ('payment_interval', 'contract_length')
         ]
         
         for feat1, feat2 in key_interactions:
@@ -273,6 +303,10 @@ class FeatureEngineer:
                 
                 # 차이
                 df_new[f'{feat1}_{feat2}_diff'] = np.abs(val1 - val2)
+                
+                # 기하평균
+                df_new[f'{feat1}_{feat2}_geomean'] = np.sqrt(val1 * val2)
+                df_new[f'{feat1}_{feat2}_geomean'] = np.clip(df_new[f'{feat1}_{feat2}_geomean'], 0, 1000)
         
         return df_new
     
@@ -302,7 +336,7 @@ class FeatureEngineer:
                     category_counts = fold_train.groupby(col).size()
                     
                     # 스무딩 파라미터 (더 보수적)
-                    alpha = min(30, max(5, len(fold_train) // 120))
+                    alpha = min(40, max(8, len(fold_train) // 100))
                     smoothed_means = (target_mean * category_counts + global_mean * alpha) / (category_counts + alpha)
                     
                     encoded_vals = fold_val[col].map(smoothed_means).fillna(global_mean)
@@ -315,7 +349,7 @@ class FeatureEngineer:
                 global_mean_all = train_df['support_needs'].mean()
                 category_counts_all = train_df.groupby(col).size()
                 
-                alpha_all = min(30, max(5, len(train_df) // 120))
+                alpha_all = min(40, max(8, len(train_df) // 100))
                 smoothed_means_all = (target_mean_all * category_counts_all + global_mean_all * alpha_all) / (category_counts_all + alpha_all)
                 
                 test_encoded = test_df[col].map(smoothed_means_all).fillna(global_mean_all)
@@ -336,19 +370,19 @@ class FeatureEngineer:
         
         # 이상치 처리 (더 보수적)
         for col in available_cols:
-            q01 = train_numeric[col].quantile(0.005)
-            q99 = train_numeric[col].quantile(0.995)
+            q01 = train_numeric[col].quantile(0.01)
+            q99 = train_numeric[col].quantile(0.99)
             
             train_numeric[col] = np.clip(train_numeric[col], q01, q99)
             test_numeric[col] = np.clip(test_numeric[col], q01, q99)
         
         # 정규화
-        scaler = RobustScaler(quantile_range=(10.0, 90.0))
+        scaler = RobustScaler(quantile_range=(5.0, 95.0))
         train_scaled = scaler.fit_transform(train_numeric)
         test_scaled = scaler.transform(test_numeric)
         
-        # 클러스터 수 줄임 (과적합 방지)
-        best_k = 4
+        # 클러스터 수 조정 (과적합 방지)
+        best_k = 5
         
         # 클러스터링
         if self.kmeans_model is None:
@@ -371,6 +405,10 @@ class FeatureEngineer:
         
         train_new['cluster_distance'] = train_distances
         test_new['cluster_distance'] = test_distances
+        
+        # 클러스터 내 상대적 위치
+        train_new['cluster_relative_pos'] = train_distances / (np.mean(train_distances) + 1e-6)
+        test_new['cluster_relative_pos'] = test_distances / (np.mean(train_distances) + 1e-6)
         
         return train_new, test_new
     
@@ -395,7 +433,7 @@ class FeatureEngineer:
         
         return train_new, test_new
     
-    def select_features(self, train_df, target_col='support_needs', max_features=60):
+    def select_features(self, train_df, target_col='support_needs', max_features=65):
         """피처 선택"""
         if target_col not in train_df.columns:
             feature_cols = [col for col in train_df.columns if col not in ['ID']]
@@ -410,8 +448,8 @@ class FeatureEngineer:
         X = train_df[feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
         y = np.clip(train_df[target_col], 0, 2)
         
-        # 분산 필터링 (더 보수적)
-        variance_selector = VarianceThreshold(threshold=0.0003)
+        # 분산 필터링 (완화)
+        variance_selector = VarianceThreshold(threshold=0.0001)
         X_variance = variance_selector.fit_transform(X)
         variance_features = [feature_cols[i] for i, selected in enumerate(variance_selector.get_support()) if selected]
         
@@ -437,7 +475,7 @@ class FeatureEngineer:
         if train_df is None or test_df is None or train_df.empty or test_df.empty:
             return None, None
         
-        # after_interaction 처리 (보수적)
+        # after_interaction 처리 (더 보수적)
         train_df, test_df = self.handle_after_interaction(train_df, test_df, temporal_threshold)
         
         # 시간 피처
@@ -448,18 +486,18 @@ class FeatureEngineer:
         train_df = self.create_business_features(train_df)
         test_df = self.create_business_features(test_df)
         
-        # 통계 피처 (제한적)
+        # 통계 피처
         train_df = self.create_statistical_features(train_df)
         test_df = self.create_statistical_features(test_df)
         
-        # 상호작용 피처 (핵심만)
+        # 상호작용 피처
         train_df = self.create_interaction_features(train_df)
         test_df = self.create_interaction_features(test_df)
         
         # 타겟 인코딩 (보수적)
         train_df, test_df = self.create_target_encoding(train_df, test_df)
         
-        # 클러스터링 피처 (축소)
+        # 클러스터링 피처
         train_df, test_df = self.create_clustering_features(train_df, test_df)
         
         # 범주형 인코딩

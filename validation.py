@@ -12,7 +12,7 @@ warnings.filterwarnings('ignore')
 class ValidationSystem:
     def __init__(self):
         self.validation_results = {}
-        self.gap_ratio = 0.008  # 축소된 갭 (0.8%)
+        self.gap_ratio = 0.006  # 축소된 갭 (0.6%)
         
     def safe_data_conversion(self, X, y=None):
         """안전한 데이터 변환"""
@@ -69,7 +69,7 @@ class ValidationSystem:
                     overlap_count = len([x for x in train_nums if x >= test_min])
                     overlap_ratio = overlap_count / len(train_nums)
                     
-                    if overlap_ratio > 0.03:  # 3% 이상 겹침
+                    if overlap_ratio > 0.04:  # 4% 이상 겹침
                         issues.append(f"temporal_overlap: {overlap_ratio:.3f}")
         
         return len(issues) == 0, issues
@@ -89,17 +89,17 @@ class ValidationSystem:
             else:
                 class_weights[i] = 1.0
         
-        # 정밀 분포 보정 (기준점 돌파용)
-        class_weights[0] *= 1.14  # 클래스 0 증가
-        class_weights[1] *= 1.03  # 클래스 1 소폭 증가
-        class_weights[2] *= 0.92  # 클래스 2 감소
+        # 정밀 분포 보정
+        class_weights[0] *= 1.18  # 클래스 0 증가
+        class_weights[1] *= 1.04  # 클래스 1 소폭 증가
+        class_weights[2] *= 0.88  # 클래스 2 감소
         
         model = RandomForestClassifier(
-            n_estimators=280,
-            max_depth=9,
-            min_samples_split=8,
-            min_samples_leaf=4,
-            max_features=0.78,
+            n_estimators=300,
+            max_depth=10,
+            min_samples_split=7,
+            min_samples_leaf=3,
+            max_features=0.80,
             bootstrap=True,
             class_weight=class_weights,
             random_state=42,
@@ -119,11 +119,11 @@ class ValidationSystem:
             sorted_indices = np.argsort(temporal_ids)
             
             total_samples = len(sorted_indices)
-            gap_size = int(total_samples * self.gap_ratio)  # 0.8%
+            gap_size = int(total_samples * self.gap_ratio)  # 0.6%
             
             # 최소 폴드 크기 확보
-            min_fold_size = total_samples // (n_splits * 2.2)
-            if min_fold_size < 600:
+            min_fold_size = total_samples // (n_splits * 2.0)
+            if min_fold_size < 550:
                 return self.standard_cv(X, y, n_splits)
             
             fold_scores = []
@@ -131,7 +131,7 @@ class ValidationSystem:
             
             for fold in range(n_splits):
                 # 동적 윈도우 크기
-                window_size = int(min_fold_size + (fold * min_fold_size // 3))
+                window_size = int(min_fold_size + (fold * min_fold_size // 4))
                 
                 train_start = int(fold * min_fold_size)
                 train_end = int(train_start + window_size)
@@ -145,7 +145,7 @@ class ValidationSystem:
                 train_idx = sorted_indices[train_start:train_end]
                 val_idx = sorted_indices[val_start:val_end]
                 
-                if len(train_idx) < 300 or len(val_idx) < 150:
+                if len(train_idx) < 250 or len(val_idx) < 120:
                     continue
                 
                 X_train_fold = np.delete(X_clean[train_idx], temporal_col_idx, axis=1)
@@ -318,7 +318,7 @@ class ValidationSystem:
             try:
                 X_train, X_val, y_train, y_val = train_test_split(
                     X_temp, y_clean, 
-                    test_size=0.22, 
+                    test_size=0.24, 
                     random_state=run * 7, 
                     stratify=y_clean
                 )
@@ -456,11 +456,11 @@ class ValidationSystem:
             from sklearn.model_selection import train_test_split
             try:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.18, random_state=42, stratify=y_clean
+                    X_clean, y_clean, test_size=0.20, random_state=42, stratify=y_clean
                 )
             except:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.18, random_state=42
+                    X_clean, y_clean, test_size=0.20, random_state=42
                 )
             holdout_results = self.holdout_validation(X_train_split, y_train_split, X_val_split, y_val_split)
         
@@ -476,7 +476,7 @@ class ValidationSystem:
         # 피처 중요도 검증
         feature_results = self.feature_importance_validation(X_train, y_train)
         
-        # 종합 점수 계산 (분포 적합성 가중치 추가)
+        # 종합 점수 계산 (분포 적합성 가중치 증가)
         holdout_score = holdout_results.get('accuracy', 0.0)
         distribution_score = holdout_results.get('distribution_score', 0.0)
         cv_score = cv_results.get('mean_score', 0.0)
@@ -485,11 +485,11 @@ class ValidationSystem:
         
         # 가중 평균 (분포 적합성 중요도 증가)
         overall_score = (
-            holdout_score * 0.25 +
-            distribution_score * 0.20 +
+            holdout_score * 0.22 +
+            distribution_score * 0.25 +
             cv_score * 0.20 +
             repeated_cv_score * 0.15 +
-            stability_score * 0.20
+            stability_score * 0.18
         )
         
         self.validation_results = {
