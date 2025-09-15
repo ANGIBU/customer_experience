@@ -78,7 +78,7 @@ class ValidationSystem:
         """검증용 모델 생성"""
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         
-        # 클래스 가중치 계산 (분포 보정 반영)
+        # 클래스 가중치 계산 (원본 성능 보존)
         class_counts = np.bincount(y_train_clean.astype(int))
         total_samples = len(y_train_clean)
         class_weights = {}
@@ -89,10 +89,10 @@ class ValidationSystem:
             else:
                 class_weights[i] = 1.0
         
-        # 분포 보정 (더 정밀하게)
-        class_weights[0] *= 1.32  # 클래스 0 과소예측 보정 강화
-        class_weights[1] *= 1.05  # 클래스 1 유지
-        class_weights[2] *= 0.82  # 클래스 2 과다예측 보정 강화
+        # 최소한의 분포 보정 (모델 성능 우선)
+        class_weights[0] *= 1.10  # 클래스 0 소폭 증가
+        class_weights[1] *= 1.02  # 클래스 1 거의 유지
+        class_weights[2] *= 0.95  # 클래스 2 소폭 감소
         
         model = RandomForestClassifier(
             n_estimators=280,
