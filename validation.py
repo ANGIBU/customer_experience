@@ -12,7 +12,7 @@ warnings.filterwarnings('ignore')
 class ValidationSystem:
     def __init__(self):
         self.validation_results = {}
-        self.gap_ratio = 0.01  # 축소된 갭 (1%)
+        self.gap_ratio = 0.008  # 축소된 갭 (0.8%)
         
     def safe_data_conversion(self, X, y=None):
         """안전한 데이터 변환"""
@@ -69,7 +69,7 @@ class ValidationSystem:
                     overlap_count = len([x for x in train_nums if x >= test_min])
                     overlap_ratio = overlap_count / len(train_nums)
                     
-                    if overlap_ratio > 0.05:  # 완화된 기준 (5%)
+                    if overlap_ratio > 0.03:  # 3% 이상 겹침
                         issues.append(f"temporal_overlap: {overlap_ratio:.3f}")
         
         return len(issues) == 0, issues
@@ -78,7 +78,7 @@ class ValidationSystem:
         """검증용 모델 생성"""
         X_train_clean, y_train_clean = self.safe_data_conversion(X_train, y_train)
         
-        # 클래스 가중치 계산
+        # 클래스 가중치 계산 (분포 보정 반영)
         class_counts = np.bincount(y_train_clean.astype(int))
         total_samples = len(y_train_clean)
         class_weights = {}
@@ -89,16 +89,17 @@ class ValidationSystem:
             else:
                 class_weights[i] = 1.0
         
-        # 클래스 불균형 보정
-        class_weights[1] *= 1.15
-        class_weights[2] *= 1.05
+        # 분포 보정
+        class_weights[0] *= 1.22  # 클래스 0 과소예측 보정
+        class_weights[1] *= 1.08  # 클래스 1 유지
+        class_weights[2] *= 0.87  # 클래스 2 과다예측 보정
         
         model = RandomForestClassifier(
-            n_estimators=250,
-            max_depth=10,
-            min_samples_split=10,
-            min_samples_leaf=5,
-            max_features=0.75,
+            n_estimators=280,
+            max_depth=9,
+            min_samples_split=8,
+            min_samples_leaf=4,
+            max_features=0.78,
             bootstrap=True,
             class_weight=class_weights,
             random_state=42,
@@ -108,7 +109,7 @@ class ValidationSystem:
         model.fit(X_train_clean, y_train_clean)
         return model
     
-    def gap_walk_forward_cv(self, X, y, n_splits=5):
+    def gap_walk_forward_cv(self, X, y, n_splits=4):
         """갭이 있는 워크포워드 교차검증"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
@@ -118,11 +119,11 @@ class ValidationSystem:
             sorted_indices = np.argsort(temporal_ids)
             
             total_samples = len(sorted_indices)
-            gap_size = int(total_samples * self.gap_ratio)  # 1%
+            gap_size = int(total_samples * self.gap_ratio)  # 0.8%
             
-            # 최소 폴드 크기 확보 (완화된 기준)
-            min_fold_size = total_samples // (n_splits * 2.5)
-            if min_fold_size < 500:
+            # 최소 폴드 크기 확보
+            min_fold_size = total_samples // (n_splits * 2.2)
+            if min_fold_size < 600:
                 return self.standard_cv(X, y, n_splits)
             
             fold_scores = []
@@ -130,7 +131,7 @@ class ValidationSystem:
             
             for fold in range(n_splits):
                 # 동적 윈도우 크기
-                window_size = int(min_fold_size + (fold * min_fold_size // 4))
+                window_size = int(min_fold_size + (fold * min_fold_size // 3))
                 
                 train_start = int(fold * min_fold_size)
                 train_end = int(train_start + window_size)
@@ -144,7 +145,7 @@ class ValidationSystem:
                 train_idx = sorted_indices[train_start:train_end]
                 val_idx = sorted_indices[val_start:val_end]
                 
-                if len(train_idx) < 200 or len(val_idx) < 100:
+                if len(train_idx) < 300 or len(val_idx) < 150:
                     continue
                 
                 X_train_fold = np.delete(X_clean[train_idx], temporal_col_idx, axis=1)
@@ -173,7 +174,7 @@ class ValidationSystem:
         else:
             return self.standard_cv(X, y, n_splits)
     
-    def standard_cv(self, X, y, n_splits=5):
+    def standard_cv(self, X, y, n_splits=4):
         """표준 교차검증"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
@@ -204,7 +205,7 @@ class ValidationSystem:
             'cv_type': 'stratified_kfold'
         }
     
-    def repeated_cv(self, X, y, n_repeats=3, n_splits=5):
+    def repeated_cv(self, X, y, n_repeats=2, n_splits=4):
         """반복 교차검증"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
@@ -253,6 +254,15 @@ class ValidationSystem:
         f1_macro = f1_score(y_val_clean, y_pred, average='macro')
         f1_weighted = f1_score(y_val_clean, y_pred, average='weighted')
         
+        # 분포 적합성 평가
+        pred_dist = np.bincount(y_pred, minlength=3) / len(y_pred)
+        actual_dist = np.bincount(y_val_clean, minlength=3) / len(y_val_clean)
+        target_dist = np.array([0.463, 0.269, 0.268])  # 훈련 데이터 분포
+        
+        # 분포 차이 계산
+        distribution_error = np.sum(np.abs(pred_dist - target_dist))
+        distribution_score = max(0, 1 - distribution_error)
+        
         # 클래스별 성능
         class_scores = {}
         for cls in range(3):
@@ -276,6 +286,10 @@ class ValidationSystem:
             'accuracy': accuracy,
             'f1_macro': f1_macro,
             'f1_weighted': f1_weighted,
+            'distribution_score': distribution_score,
+            'distribution_error': distribution_error,
+            'predicted_distribution': pred_dist.tolist(),
+            'target_distribution': target_dist.tolist(),
             'class_scores': class_scores,
             'avg_confidence': avg_confidence,
             'low_confidence_ratio': low_confidence_ratio,
@@ -283,7 +297,7 @@ class ValidationSystem:
             'total_samples': len(y_val_clean)
         }
     
-    def stability_test(self, X, y, n_runs=10):
+    def stability_test(self, X, y, n_runs=8):
         """안정성 테스트"""
         X_clean, y_clean = self.safe_data_conversion(X, y)
         
@@ -298,13 +312,13 @@ class ValidationSystem:
         
         accuracy_scores = []
         f1_scores = []
-        class_balance_scores = []
+        distribution_scores = []
         
         for run in range(n_runs):
             try:
                 X_train, X_val, y_train, y_val = train_test_split(
                     X_temp, y_clean, 
-                    test_size=0.25, 
+                    test_size=0.22, 
                     random_state=run * 7, 
                     stratify=y_clean
                 )
@@ -315,13 +329,15 @@ class ValidationSystem:
                 accuracy = accuracy_score(y_val, y_pred)
                 f1 = f1_score(y_val, y_pred, average='macro')
                 
-                # 클래스 균형 점수
-                class_f1_scores = f1_score(y_val, y_pred, average=None)
-                class_balance = 1 - np.std(class_f1_scores) if len(class_f1_scores) > 1 else 0
+                # 분포 점수
+                pred_dist = np.bincount(y_pred, minlength=3) / len(y_pred)
+                target_dist = np.array([0.463, 0.269, 0.268])
+                distribution_error = np.sum(np.abs(pred_dist - target_dist))
+                distribution_score = max(0, 1 - distribution_error)
                 
                 accuracy_scores.append(accuracy)
                 f1_scores.append(f1)
-                class_balance_scores.append(class_balance)
+                distribution_scores.append(distribution_score)
                 
             except Exception:
                 continue
@@ -334,23 +350,24 @@ class ValidationSystem:
         std_accuracy = np.std(accuracy_scores)
         mean_f1 = np.mean(f1_scores)
         std_f1 = np.std(f1_scores)
-        mean_balance = np.mean(class_balance_scores)
+        mean_distribution = np.mean(distribution_scores)
         
         # 안정성 점수
         accuracy_stability = max(0, 1 - (std_accuracy / mean_accuracy)) if mean_accuracy > 0 else 0
         f1_stability = max(0, 1 - (std_f1 / mean_f1)) if mean_f1 > 0 else 0
-        overall_stability = (accuracy_stability + f1_stability + mean_balance) / 3
+        overall_stability = (accuracy_stability + f1_stability + mean_distribution) / 3
         
         return {
             'accuracy_scores': accuracy_scores,
             'f1_scores': f1_scores,
+            'distribution_scores': distribution_scores,
             'mean_accuracy': mean_accuracy,
             'std_accuracy': std_accuracy,
             'mean_f1': mean_f1,
             'std_f1': std_f1,
+            'mean_distribution': mean_distribution,
             'accuracy_stability': accuracy_stability,
             'f1_stability': f1_stability,
-            'class_balance': mean_balance,
             'overall_stability': overall_stability,
             'n_runs': len(accuracy_scores)
         }
@@ -394,6 +411,10 @@ class ValidationSystem:
             'accuracy': 0.0,
             'f1_macro': 0.0,
             'f1_weighted': 0.0,
+            'distribution_score': 0.0,
+            'distribution_error': 1.0,
+            'predicted_distribution': [0.33, 0.33, 0.34],
+            'target_distribution': [0.463, 0.269, 0.268],
             'class_scores': {0: {'accuracy': 0.0, 'f1': 0.0}, 
                            1: {'accuracy': 0.0, 'f1': 0.0}, 
                            2: {'accuracy': 0.0, 'f1': 0.0}},
@@ -408,13 +429,14 @@ class ValidationSystem:
         return {
             'accuracy_scores': [0.0],
             'f1_scores': [0.0],
+            'distribution_scores': [0.0],
             'mean_accuracy': 0.0,
             'std_accuracy': 0.0,
             'mean_f1': 0.0,
             'std_f1': 0.0,
+            'mean_distribution': 0.0,
             'accuracy_stability': 0.0,
             'f1_stability': 0.0,
-            'class_balance': 0.0,
             'overall_stability': 0.0,
             'n_runs': 0
         }
@@ -434,11 +456,11 @@ class ValidationSystem:
             from sklearn.model_selection import train_test_split
             try:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.2, random_state=42, stratify=y_clean
+                    X_clean, y_clean, test_size=0.18, random_state=42, stratify=y_clean
                 )
             except:
                 X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
-                    X_clean, y_clean, test_size=0.2, random_state=42
+                    X_clean, y_clean, test_size=0.18, random_state=42
                 )
             holdout_results = self.holdout_validation(X_train_split, y_train_split, X_val_split, y_val_split)
         
@@ -446,7 +468,7 @@ class ValidationSystem:
         cv_results = self.gap_walk_forward_cv(X_train, y_train)
         
         # 반복 교차검증
-        repeated_cv_results = self.repeated_cv(X_train, y_train, n_repeats=2, n_splits=5)
+        repeated_cv_results = self.repeated_cv(X_train, y_train, n_repeats=2, n_splits=4)
         
         # 안정성 테스트
         stability_results = self.stability_test(X_train, y_train)
@@ -454,18 +476,20 @@ class ValidationSystem:
         # 피처 중요도 검증
         feature_results = self.feature_importance_validation(X_train, y_train)
         
-        # 종합 점수 계산 (안정성 가중치 증가)
+        # 종합 점수 계산 (분포 적합성 가중치 추가)
         holdout_score = holdout_results.get('accuracy', 0.0)
+        distribution_score = holdout_results.get('distribution_score', 0.0)
         cv_score = cv_results.get('mean_score', 0.0)
         repeated_cv_score = repeated_cv_results.get('mean_score', 0.0)
         stability_score = stability_results.get('overall_stability', 0.0)
         
-        # 가중 평균으로 종합 점수 (안정성 가중치 40%로 증가)
+        # 가중 평균 (분포 적합성 중요도 증가)
         overall_score = (
-            holdout_score * 0.2 +
-            cv_score * 0.25 +
+            holdout_score * 0.25 +
+            distribution_score * 0.20 +
+            cv_score * 0.20 +
             repeated_cv_score * 0.15 +
-            stability_score * 0.4
+            stability_score * 0.20
         )
         
         self.validation_results = {
@@ -477,6 +501,7 @@ class ValidationSystem:
             'overall_score': overall_score,
             'component_scores': {
                 'holdout_score': holdout_score,
+                'distribution_score': distribution_score,
                 'cv_score': cv_score,
                 'repeated_cv_score': repeated_cv_score,
                 'stability_score': stability_score
@@ -496,6 +521,7 @@ class ValidationSystem:
             'overall_score': 0.0,
             'component_scores': {
                 'holdout_score': 0.0,
+                'distribution_score': 0.0,
                 'cv_score': 0.0,
                 'repeated_cv_score': 0.0,
                 'stability_score': 0.0

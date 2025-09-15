@@ -280,13 +280,13 @@ class PredictionSystem:
             
             return weights
         
-        # 기본 가중치
+        # 수정된 가중치
         default_weights = {
-            'lightgbm': 0.28,
-            'xgboost': 0.25,
-            'catboost': 0.22,
-            'stacking': 0.15,
-            'random_forest': 0.06,
+            'lightgbm': 0.26,
+            'xgboost': 0.24,
+            'catboost': 0.21,
+            'stacking': 0.17,
+            'random_forest': 0.08,
             'gradient_boosting': 0.03,
             'extra_trees': 0.01
         }
@@ -334,11 +334,50 @@ class PredictionSystem:
         
         return ensemble_proba
     
-    def apply_single_calibration(self, pred_proba):
-        """단일 확률 보정"""
+    def apply_distribution_correction(self, pred_proba):
+        """분포 보정"""
         try:
-            # Temperature scaling만 적용
-            temperature = 1.03
+            # 목표 분포 (훈련 데이터 기준)
+            target_distribution = np.array([0.463, 0.269, 0.268])
+            
+            # 현재 예측 분포
+            current_predictions = np.argmax(pred_proba, axis=1)
+            current_distribution = np.bincount(current_predictions, minlength=3) / len(current_predictions)
+            
+            # 분포 차이 계산
+            distribution_diff = target_distribution - current_distribution
+            
+            # 클래스별 조정 계수
+            adjustment_factors = np.ones(3)
+            
+            # 클래스 0 부족 보정
+            if distribution_diff[0] > 0.05:
+                adjustment_factors[0] = 1.12
+            
+            # 클래스 2 과다 보정
+            if distribution_diff[2] < -0.05:
+                adjustment_factors[2] = 0.92
+            
+            # 클래스 1 미세 조정
+            adjustment_factors[1] = 1.02
+            
+            # 조정 적용
+            adjusted_proba = pred_proba * adjustment_factors[np.newaxis, :]
+            
+            # 재정규화
+            row_sums = adjusted_proba.sum(axis=1, keepdims=True)
+            corrected_proba = adjusted_proba / row_sums
+            
+            return corrected_proba
+            
+        except Exception:
+            return pred_proba
+    
+    def apply_calibration(self, pred_proba):
+        """확률 보정"""
+        try:
+            # Temperature scaling
+            temperature = 1.02
             
             # 로그 확률로 변환
             log_proba = np.log(np.clip(pred_proba, 1e-7, 1-1e-7))
@@ -354,19 +393,6 @@ class PredictionSystem:
         except Exception:
             return pred_proba
     
-    def apply_class_adjustment(self, pred_proba):
-        """클래스 균형 조정"""
-        # 클래스별 조정 계수 (미세 조정)
-        class_adjustments = np.array([1.0, 1.03, 1.01])
-        
-        adjusted_proba = pred_proba * class_adjustments[np.newaxis, :]
-        
-        # 재정규화
-        row_sums = adjusted_proba.sum(axis=1, keepdims=True)
-        final_proba = adjusted_proba / row_sums
-        
-        return final_proba
-    
     def generate_predictions(self, X_test, test_ids):
         """예측 생성"""
         # 개별 모델 예측
@@ -381,24 +407,30 @@ class PredictionSystem:
         if ensemble_proba is None:
             return self.create_fallback_predictions(X_test, test_ids)
         
-        # 단일 확률 보정
-        calibrated_proba = self.apply_single_calibration(ensemble_proba)
+        # 확률 보정
+        calibrated_proba = self.apply_calibration(ensemble_proba)
         
-        # 클래스 균형 조정
-        final_proba = self.apply_class_adjustment(calibrated_proba)
+        # 분포 보정
+        corrected_proba = self.apply_distribution_correction(calibrated_proba)
         
         # 최종 예측
-        predictions = np.argmax(final_proba, axis=1)
+        predictions = np.argmax(corrected_proba, axis=1)
         
-        # 예측 후처리 (극단적 불균형 방지)
+        # 예측 후처리
         pred_counts = np.bincount(predictions, minlength=3)
         total_preds = len(predictions)
         
-        # 클래스 1이 너무 적으면 조정
-        if pred_counts[1] < total_preds * 0.08:
-            class_1_proba = final_proba[:, 1]
-            top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.08):]
+        # 클래스 1 최소 비율 보장
+        if pred_counts[1] < total_preds * 0.22:
+            class_1_proba = corrected_proba[:, 1]
+            top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.22):]
             predictions[top_indices] = 1
+        
+        # 클래스 0 최소 비율 보장
+        if pred_counts[0] < total_preds * 0.40:
+            class_0_proba = corrected_proba[:, 0]
+            top_indices = np.argsort(class_0_proba)[-int(total_preds * 0.40):]
+            predictions[top_indices] = 0
         
         # 제출 파일 생성
         submission_df = pd.DataFrame({
@@ -458,14 +490,17 @@ class PredictionSystem:
                     else:
                         class_weights[i] = 1.0
                 
-                class_weights[1] *= 1.1
+                # 분포 보정 가중치
+                class_weights[0] = class_weights[0] * 1.3
+                class_weights[1] = class_weights[1] * 1.1
+                class_weights[2] = class_weights[2] * 0.8
             
             # 모델 학습
             model = RandomForestClassifier(
-                n_estimators=400,
-                max_depth=11,
-                min_samples_split=8,
-                min_samples_leaf=4,
+                n_estimators=500,
+                max_depth=12,
+                min_samples_split=6,
+                min_samples_leaf=3,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
@@ -476,11 +511,9 @@ class PredictionSystem:
             # 예측
             pred_proba = model.predict_proba(X_test_simple)
             
-            # 확률 보정
-            calibrated_proba = self.apply_minimal_calibration(pred_proba)
-            calibrated_proba = self.apply_micro_adjustment(calibrated_proba)
-            
-            predictions = np.argmax(calibrated_proba, axis=1)
+            # 분포 보정 적용
+            corrected_proba = self.apply_distribution_correction(pred_proba)
+            predictions = np.argmax(corrected_proba, axis=1)
             
             # 제출 파일
             submission_df = pd.DataFrame({
@@ -493,9 +526,9 @@ class PredictionSystem:
             return submission_df
             
         except Exception as e:
-            # 최종 대체 (랜덤 예측)
+            # 최종 대체 (분포 고려한 랜덤)
             np.random.seed(42)
-            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.45, 0.35, 0.20])
+            random_predictions = np.random.choice([0, 1, 2], size=len(test_ids), p=[0.46, 0.27, 0.27])
             
             submission_df = pd.DataFrame({
                 'ID': test_ids,
