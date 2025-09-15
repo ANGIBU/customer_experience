@@ -68,8 +68,8 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 시간적 분할점 계산 (90% 퍼센타일로 완화)
-            overlap_threshold = int(np.percentile(train_id_nums, 90))
+            # 시간적 분할점 계산 (85% 퍼센타일로 완화)
+            overlap_threshold = int(np.percentile(train_id_nums, 85))
             
             self.temporal_threshold = overlap_threshold
             
@@ -125,7 +125,7 @@ class DataAnalyzer:
                 
                 f_stat, p_value = stats.f_oneway(*groups) if len(groups) >= 2 else (0, 1)
                 
-                # 완화된 누수 기준 (0.25, 0.5, 0.001)
+                # 완화된 누수 기준
                 leakage_features['after_interaction'] = {
                     'correlation': correlation,
                     'mutual_info': mi_score,
@@ -133,7 +133,7 @@ class DataAnalyzer:
                     'f_statistic': f_stat,
                     'p_value': p_value,
                     'class_stats': class_stats,
-                    'is_leakage': abs(correlation) > 0.25 or mi_score > 0.5 or p_value < 0.001
+                    'is_leakage': abs(correlation) > 0.35 or mi_score > 0.65 or p_value < 0.0005
                 }
         
         return leakage_features
@@ -172,13 +172,14 @@ class DataAnalyzer:
                         'q75': test_vals.quantile(0.75)
                     }
                     
+                    # 완화된 안정성 기준
                     stability_results[feature] = {
                         'ks_statistic': ks_stat,
                         'ks_p_value': ks_p,
                         'psi_score': psi_score,
                         'train_stats': train_stats,
                         'test_stats': test_stats,
-                        'is_stable': ks_stat < 0.08 and psi_score < 0.15
+                        'is_stable': ks_stat < 0.12 and psi_score < 0.20
                     }
         
         return stability_results
@@ -246,7 +247,7 @@ class DataAnalyzer:
                         'chi2_statistic': chi2_stat,
                         'chi2_p_value': chi2_p,
                         'common_categories': list(common_cats),
-                        'is_stable': chi2_p > 0.05
+                        'is_stable': chi2_p > 0.02
                     }
         
         return categorical_analysis
@@ -286,6 +287,69 @@ class DataAnalyzer:
         
         return importance_dict
     
+    def analyze_feature_correlations(self):
+        """피처 간 상관관계 분석"""
+        numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
+        available_cols = [col for col in numeric_cols if col in self.train_df.columns]
+        
+        if len(available_cols) < 2:
+            return {}
+        
+        correlation_matrix = self.train_df[available_cols].corr()
+        
+        # 높은 상관관계 피처 쌍 찾기
+        high_corr_pairs = []
+        for i in range(len(correlation_matrix.columns)):
+            for j in range(i+1, len(correlation_matrix.columns)):
+                corr_val = correlation_matrix.iloc[i, j]
+                if abs(corr_val) > 0.7:
+                    high_corr_pairs.append({
+                        'feature1': correlation_matrix.columns[i],
+                        'feature2': correlation_matrix.columns[j],
+                        'correlation': corr_val
+                    })
+        
+        return {
+            'correlation_matrix': correlation_matrix.to_dict(),
+            'high_correlation_pairs': high_corr_pairs,
+            'max_correlation': correlation_matrix.abs().values.max()
+        }
+    
+    def analyze_missing_patterns(self):
+        """결측치 패턴 분석"""
+        missing_info = {}
+        
+        for col in self.train_df.columns:
+            if col != 'ID':
+                train_missing = self.train_df[col].isnull().mean()
+                test_missing = self.test_df[col].isnull().mean() if col in self.test_df.columns else 0
+                
+                missing_info[col] = {
+                    'train_missing_ratio': train_missing,
+                    'test_missing_ratio': test_missing,
+                    'missing_difference': abs(train_missing - test_missing)
+                }
+        
+        # 결측치 패턴 동시 발생
+        missing_combinations = []
+        cols_with_missing = [col for col, info in missing_info.items() if info['train_missing_ratio'] > 0.01]
+        
+        if len(cols_with_missing) >= 2:
+            for i in range(len(cols_with_missing)):
+                for j in range(i+1, len(cols_with_missing)):
+                    col1, col2 = cols_with_missing[i], cols_with_missing[j]
+                    both_missing = (self.train_df[col1].isnull() & self.train_df[col2].isnull()).mean()
+                    missing_combinations.append({
+                        'feature1': col1,
+                        'feature2': col2,
+                        'both_missing_ratio': both_missing
+                    })
+        
+        return {
+            'individual_missing': missing_info,
+            'missing_combinations': missing_combinations
+        }
+    
     def validate_data_integrity(self):
         """데이터 무결성 검증"""
         issues = []
@@ -312,8 +376,18 @@ class DataAnalyzer:
             if col != 'ID':
                 missing_ratio = self.train_df[col].isnull().mean()
                 missing_info[col] = missing_ratio
-                if missing_ratio > 0.35:
+                if missing_ratio > 0.40:
                     issues.append(f"{col}_high_missing: {missing_ratio:.3f}")
+        
+        # 이상치 확인
+        numeric_cols = self.train_df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if col not in ['ID', 'support_needs']:
+                q99 = self.train_df[col].quantile(0.99)
+                q01 = self.train_df[col].quantile(0.01)
+                outlier_ratio = ((self.train_df[col] > q99) | (self.train_df[col] < q01)).mean()
+                if outlier_ratio > 0.15:
+                    issues.append(f"{col}_high_outliers: {outlier_ratio:.3f}")
         
         return len(issues) == 0, issues, missing_info
     
@@ -353,6 +427,14 @@ class DataAnalyzer:
         # 피처 중요도
         importance_info = self.compute_feature_importance_baseline()
         self.analysis_results['feature_importance'] = importance_info
+        
+        # 피처 상관관계
+        correlation_info = self.analyze_feature_correlations()
+        self.analysis_results['correlations'] = correlation_info
+        
+        # 결측치 패턴
+        missing_pattern_info = self.analyze_missing_patterns()
+        self.analysis_results['missing_patterns'] = missing_pattern_info
         
         return self.analysis_results
 

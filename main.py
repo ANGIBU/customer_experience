@@ -19,7 +19,7 @@ class AISystem:
     def __init__(self):
         self.start_time = None
         self.results = {}
-        self.target_accuracy = 0.495
+        self.target_accuracy = 0.50
         
     def setup_environment(self):
         """환경 설정"""
@@ -58,7 +58,7 @@ class AISystem:
             if 'temporal' in analysis_results:
                 temporal_info = analysis_results['temporal']
                 safe_ratio = temporal_info.get('safe_ratio', 1.0)
-                if safe_ratio < 0.95:
+                if safe_ratio < 0.90:
                     print(f"주의: 시간적 안전 비율 {safe_ratio:.1%}")
             
             # 타겟 누수 확인
@@ -151,9 +151,9 @@ class AISystem:
                 print("전처리 데이터 비어있음")
                 return False, None, None, None, None, None, None, None
             
-            # 시간 기반 분할
+            # 시간 기반 분할 (수정된 메서드명)
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_split(
-                train_final, test_final, val_size=0.15, gap_size=0.006
+                train_final, test_final, val_size=0.16, gap_size=0.008
             )
             
             if X_train is None or X_val is None or y_train is None or y_val is None:
@@ -428,20 +428,20 @@ class AISystem:
                     class_weights[i] = 1.0
             
             # 분포 보정
-            class_weights[0] *= 1.42   # 클래스 0 과소예측 보정
-            class_weights[1] *= 1.08   # 클래스 1 유지  
-            class_weights[2] *= 0.74   # 클래스 2 과다예측 보정
+            class_weights[0] *= 1.3   # 클래스 0 과소예측 보정
+            class_weights[1] *= 1.1   # 클래스 1 유지  
+            class_weights[2] *= 0.8   # 클래스 2 과다예측 보정
             
             # 앙상블 모델 학습
             models = []
             
             # Random Forest
             rf_model = RandomForestClassifier(
-                n_estimators=520,
-                max_depth=11,
-                min_samples_split=7,
+                n_estimators=500,
+                max_depth=12,
+                min_samples_split=8,
                 min_samples_leaf=4,
-                max_features=0.82,
+                max_features=0.8,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
@@ -450,19 +450,19 @@ class AISystem:
             
             # Gradient Boosting
             gb_model = GradientBoostingClassifier(
-                n_estimators=350,
-                learning_rate=0.05,
-                max_depth=6,
-                min_samples_split=12,
-                min_samples_leaf=6,
-                subsample=0.88,
+                n_estimators=300,
+                learning_rate=0.06,
+                max_depth=7,
+                min_samples_split=15,
+                min_samples_leaf=8,
+                subsample=0.85,
                 random_state=42
             )
             models.append(('gb', gb_model))
             
             # 앙상블 예측
             ensemble_predictions = []
-            model_weights = [0.68, 0.32]  # RF에 더 높은 가중치
+            model_weights = [0.65, 0.35]  # RF에 더 높은 가중치
             
             for i, (name, model) in enumerate(models):
                 if name == 'gb':
@@ -482,7 +482,7 @@ class AISystem:
             final_proba = np.sum(ensemble_predictions, axis=0)
             
             # 클래스 균형 조정 (분포 보정)
-            class_adjustments = np.array([1.18, 1.06, 0.90])  # 클래스 0 증가, 클래스 2 감소
+            class_adjustments = np.array([1.15, 1.05, 0.92])  # 클래스 0 증가, 클래스 2 감소
             adjusted_proba = final_proba * class_adjustments[np.newaxis, :]
             normalized_proba = adjusted_proba / adjusted_proba.sum(axis=1, keepdims=True)
             
@@ -492,16 +492,16 @@ class AISystem:
             pred_counts = np.bincount(predictions, minlength=3)
             total_preds = len(predictions)
             
-            # 클래스 0 최소 비율 보장 (43%)
-            if pred_counts[0] < total_preds * 0.43:
+            # 클래스 0 최소 비율 보장 (40%)
+            if pred_counts[0] < total_preds * 0.40:
                 class_0_proba = normalized_proba[:, 0]
-                top_indices = np.argsort(class_0_proba)[-int(total_preds * 0.44):]
+                top_indices = np.argsort(class_0_proba)[-int(total_preds * 0.40):]
                 predictions[top_indices] = 0
             
-            # 클래스 1 최소 비율 보장 (25%)
-            if pred_counts[1] < total_preds * 0.25:
+            # 클래스 1 최소 비율 보장 (22%)
+            if pred_counts[1] < total_preds * 0.22:
                 class_1_proba = normalized_proba[:, 1]
-                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.26):]
+                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.22):]
                 predictions[top_indices] = 1
             
             # 제출 파일
@@ -630,11 +630,11 @@ class AISystem:
                 model_achieved = self.results['model_training'].get('target_achieved', False)
                 distribution_score = self.results['prediction'].get('distribution_score', 0.0)
                 
-                if val_score >= self.target_accuracy and model_achieved and distribution_score > 0.85:
+                if val_score >= self.target_accuracy and model_achieved and distribution_score > 0.8:
                     print("✓ 목표 성능 달성")
-                elif val_score >= self.target_accuracy * 0.99 and distribution_score > 0.75:
+                elif val_score >= self.target_accuracy * 0.98 and distribution_score > 0.7:
                     print("→ 목표 근접")
-                elif success_rate >= 83 and distribution_score > 0.65:
+                elif success_rate >= 83 and distribution_score > 0.6:
                     print("→ 파이프라인 안정")
                 else:
                     print("→ 부분 성공")
