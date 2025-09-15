@@ -740,5 +740,5 @@ def main():
         print("프로그램 실행 실패")
         return 1
 
-if __name__ == "__main__":
+if __name__ == "__main__":fffa
     exit_code = main()
