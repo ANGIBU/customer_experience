@@ -1,5 +1,4 @@
 # main.py
-# 정확도 : 0.4926465067
 
 import os
 import sys
@@ -152,9 +151,9 @@ class AISystem:
                 print("전처리 데이터 비어있음")
                 return False, None, None, None, None, None, None, None
             
-            # 시간 기반 분할
-            X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_optimized(
-                train_final, test_final, val_size=0.18, gap_size=0.005
+            # 시간 기반 분할 (수정된 메서드명)
+            X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_split(
+                train_final, test_final, val_size=0.16, gap_size=0.008
             )
             
             if X_train is None or X_val is None or y_train is None or y_val is None:
@@ -201,10 +200,12 @@ class AISystem:
             # 검증 성능 확인
             overall_score = validation_results.get('overall_score', 0.0)
             holdout_score = validation_results.get('component_scores', {}).get('holdout_score', 0.0)
+            distribution_score = validation_results.get('component_scores', {}).get('distribution_score', 0.0)
             cv_score = validation_results.get('component_scores', {}).get('cv_score', 0.0)
             stability_score = validation_results.get('component_scores', {}).get('stability_score', 0.0)
             
             print(f"홀드아웃: {holdout_score:.4f}")
+            print(f"분포 적합성: {distribution_score:.4f}")
             print(f"교차검증: {cv_score:.4f}")
             print(f"안정성: {stability_score:.4f}")
             print(f"종합 점수: {overall_score:.4f}")
@@ -339,13 +340,22 @@ class AISystem:
                     pct = count / total_preds * 100
                     print(f"클래스 {cls}: {count:,}개 ({pct:.1f}%)")
                 
+                # 분포 적합성 평가
+                pred_dist = np.array([pred_counts.get(cls, 0) for cls in [0, 1, 2]]) / total_preds
+                target_dist = np.array([0.463, 0.269, 0.268])  # 훈련 데이터 분포
+                distribution_error = np.sum(np.abs(pred_dist - target_dist))
+                
+                print(f"분포 오차: {distribution_error:.3f}")
+                
                 if len(unique_classes) >= 2:
                     self.results['prediction'] = {
                         'submission_shape': submission_df.shape,
                         'prediction_counts': pred_counts.to_dict(),
                         'unique_classes': len(unique_classes),
                         'diversity_score': len(unique_classes) / 3.0,
-                        'method': 'weighted_ensemble'
+                        'distribution_error': distribution_error,
+                        'distribution_score': max(0, 1 - distribution_error),
+                        'method': 'weighted_ensemble_with_distribution_correction'
                     }
                     
                     print("예측 생성 완료")
@@ -406,7 +416,7 @@ class AISystem:
             y = train_processed['support_needs']
             X_test = test_processed[feature_cols].fillna(0)
             
-            # 클래스 가중치 계산
+            # 클래스 가중치 계산 (분포 보정)
             class_counts = np.bincount(y)
             total_samples = len(y)
             class_weights = {}
@@ -417,9 +427,10 @@ class AISystem:
                 else:
                     class_weights[i] = 1.0
             
-            # 클래스 1 보정
-            class_weights[1] *= 1.1
-            class_weights[2] *= 1.05
+            # 분포 보정
+            class_weights[0] *= 1.3   # 클래스 0 과소예측 보정
+            class_weights[1] *= 1.1   # 클래스 1 유지  
+            class_weights[2] *= 0.8   # 클래스 2 과다예측 보정
             
             # 앙상블 모델 학습
             models = []
@@ -451,18 +462,27 @@ class AISystem:
             
             # 앙상블 예측
             ensemble_predictions = []
-            model_weights = [0.6, 0.4]  # RF에 더 높은 가중치
+            model_weights = [0.65, 0.35]  # RF에 더 높은 가중치
             
             for i, (name, model) in enumerate(models):
-                model.fit(X, y)
+                if name == 'gb':
+                    # GB는 sample_weight 지원
+                    sample_weight = np.ones(len(y))
+                    for cls, weight in class_weights.items():
+                        mask = y == cls
+                        sample_weight[mask] = weight
+                    model.fit(X, y, sample_weight=sample_weight)
+                else:
+                    model.fit(X, y)
+                    
                 pred_proba = model.predict_proba(X_test)
                 ensemble_predictions.append(pred_proba * model_weights[i])
             
             # 가중 평균
             final_proba = np.sum(ensemble_predictions, axis=0)
             
-            # 클래스 균형 조정
-            class_adjustments = np.array([1.0, 1.05, 1.02])
+            # 클래스 균형 조정 (분포 보정)
+            class_adjustments = np.array([1.15, 1.05, 0.92])  # 클래스 0 증가, 클래스 2 감소
             adjusted_proba = final_proba * class_adjustments[np.newaxis, :]
             normalized_proba = adjusted_proba / adjusted_proba.sum(axis=1, keepdims=True)
             
@@ -472,10 +492,16 @@ class AISystem:
             pred_counts = np.bincount(predictions, minlength=3)
             total_preds = len(predictions)
             
-            # 클래스 1이 너무 적으면 조정
-            if pred_counts[1] < total_preds * 0.08:
+            # 클래스 0 최소 비율 보장 (40%)
+            if pred_counts[0] < total_preds * 0.40:
+                class_0_proba = normalized_proba[:, 0]
+                top_indices = np.argsort(class_0_proba)[-int(total_preds * 0.40):]
+                predictions[top_indices] = 0
+            
+            # 클래스 1 최소 비율 보장 (22%)
+            if pred_counts[1] < total_preds * 0.22:
                 class_1_proba = normalized_proba[:, 1]
-                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.08):]
+                top_indices = np.argsort(class_1_proba)[-int(total_preds * 0.22):]
                 predictions[top_indices] = 1
             
             # 제출 파일
@@ -494,10 +520,18 @@ class AISystem:
                 pct = count / len(submission_df) * 100
                 print(f"클래스 {cls}: {count:,}개 ({pct:.1f}%)")
             
+            # 분포 오차 계산
+            pred_dist = np.array([final_counts.get(cls, 0) for cls in [0, 1, 2]]) / len(submission_df)
+            target_dist = np.array([0.463, 0.269, 0.268])
+            distribution_error = np.sum(np.abs(pred_dist - target_dist))
+            print(f"분포 오차: {distribution_error:.3f}")
+            
             self.results['prediction'] = {
                 'submission_shape': submission_df.shape,
                 'prediction_counts': final_counts.to_dict(),
-                'method': 'fallback_ensemble'
+                'distribution_error': distribution_error,
+                'distribution_score': max(0, 1 - distribution_error),
+                'method': 'fallback_ensemble_with_distribution_correction'
             }
             
             print("대체 예측 완료")
@@ -543,7 +577,9 @@ class AISystem:
             if 'validation' in self.results:
                 val = self.results['validation']
                 overall_score = val.get('overall_score', 0.0)
+                distribution_score = val.get('component_scores', {}).get('distribution_score', 0.0)
                 print(f"검증 점수: {overall_score:.4f}")
+                print(f"분포 적합성: {distribution_score:.4f}")
                 
                 if overall_score >= self.target_accuracy:
                     print("✓ 목표 정확도 달성")
@@ -573,8 +609,10 @@ class AISystem:
                     pct = count / total_predictions * 100 if total_predictions > 0 else 0
                     print(f"  클래스 {cls}: {pct:.1f}%")
                 
-                diversity_score = pred.get('diversity_score', 0)
-                print(f"예측 다양성: {diversity_score:.2f}")
+                distribution_error = pred.get('distribution_error', 1.0)
+                distribution_score = pred.get('distribution_score', 0.0)
+                print(f"분포 오차: {distribution_error:.3f}")
+                print(f"분포 점수: {distribution_score:.3f}")
                 
                 if 'method' in pred:
                     print(f"예측 방법: {pred['method']}")
@@ -587,15 +625,16 @@ class AISystem:
             print(f"\n단계 완료율: {completed_steps}/{total_steps} ({success_rate:.1f}%)")
             
             # 성능 등급
-            if 'validation' in self.results and 'model_training' in self.results:
+            if 'validation' in self.results and 'model_training' in self.results and 'prediction' in self.results:
                 val_score = self.results['validation'].get('overall_score', 0.0)
                 model_achieved = self.results['model_training'].get('target_achieved', False)
+                distribution_score = self.results['prediction'].get('distribution_score', 0.0)
                 
-                if val_score >= self.target_accuracy and model_achieved:
+                if val_score >= self.target_accuracy and model_achieved and distribution_score > 0.8:
                     print("✓ 목표 성능 달성")
-                elif val_score >= self.target_accuracy * 0.95:
+                elif val_score >= self.target_accuracy * 0.98 and distribution_score > 0.7:
                     print("→ 목표 근접")
-                elif success_rate >= 83:
+                elif success_rate >= 83 and distribution_score > 0.6:
                     print("→ 파이프라인 안정")
                 else:
                     print("→ 부분 성공")
