@@ -41,10 +41,10 @@ class ModelTrainer:
             else:
                 weights[i] = 1.0
         
-        # 정밀 분포 보정 (클래스 0 대폭 증가, 클래스 2 대폭 감소)
-        weights[0] *= 1.22  # 클래스 0 대폭 증가 (39.0% → 44.5%)
-        weights[1] *= 1.05  # 클래스 1 소폭 증가 (25.2% → 26.5%)
-        weights[2] *= 0.85  # 클래스 2 대폭 감소 (35.8% → 29.0%)
+        # 정밀 분포 보정 (분포 차이 해결)
+        weights[0] *= 1.24  # 클래스 0 증가 (39.0% → 46.3%)
+        weights[1] *= 1.06  # 클래스 1 유지 (25.2% → 26.9%)
+        weights[2] *= 0.82  # 클래스 2 감소 (35.8% → 26.8%)
         
         self.class_weights = weights
         return weights
@@ -98,7 +98,7 @@ class ModelTrainer:
                 raise ValueError("전처리 실패")
             
             X_train, X_val, y_train, y_val, X_test, test_ids = preprocessor.prepare_data_temporal_split(
-                train_df, test_df, val_size=0.16, gap_size=0.006
+                train_df, test_df, val_size=0.15, gap_size=0.006
             )
             
             if X_train is None or X_val is None:
@@ -120,12 +120,12 @@ class ModelTrainer:
             'num_class': 3,
             'metric': 'multi_logloss',
             'boosting_type': 'gbdt',
-            'num_leaves': 38,
-            'learning_rate': 0.027,
+            'num_leaves': 32,
+            'learning_rate': 0.022,
             'feature_fraction': 0.84,
             'bagging_fraction': 0.89,
-            'bagging_freq': 4,
-            'min_child_weight': 8,
+            'bagging_freq': 5,
+            'min_child_weight': 12,
             'min_split_gain': 0.10,
             'reg_alpha': 0.06,
             'reg_lambda': 0.06,
@@ -152,7 +152,7 @@ class ModelTrainer:
             train_data,
             valid_sets=[val_data],
             num_boost_round=2200,
-            callbacks=[lgb.early_stopping(130), lgb.log_evaluation(0)]
+            callbacks=[lgb.early_stopping(140), lgb.log_evaluation(0)]
         )
         
         y_pred = model.predict(X_val_clean)
@@ -169,12 +169,12 @@ class ModelTrainer:
             'num_class': 3,
             'eval_metric': 'mlogloss',
             'max_depth': 5,
-            'learning_rate': 0.027,
+            'learning_rate': 0.022,
             'subsample': 0.90,
             'colsample_bytree': 0.84,
             'reg_alpha': 0.06,
             'reg_lambda': 0.06,
-            'min_child_weight': 8,
+            'min_child_weight': 12,
             'gamma': 0.10,
             'random_state': 42,
             'verbosity': 0,
@@ -196,9 +196,9 @@ class ModelTrainer:
         model = xgb.train(
             params,
             train_data,
-            num_boost_round=2000,
+            num_boost_round=2200,
             evals=[(val_data, 'eval')],
-            early_stopping_rounds=120,
+            early_stopping_rounds=140,
             verbose_eval=0
         )
         
@@ -222,15 +222,15 @@ class ModelTrainer:
         
         model = CatBoostClassifier(
             iterations=2200,
-            learning_rate=0.027,
+            learning_rate=0.022,
             depth=5,
-            l2_leaf_reg=2.2,
+            l2_leaf_reg=2.0,
             bootstrap_type='Bernoulli',
             subsample=0.87,
             colsample_bylevel=0.84,
             random_seed=42,
             verbose=0,
-            early_stopping_rounds=130,
+            early_stopping_rounds=140,
             task_type='CPU',
             thread_count=-1
         )
@@ -256,9 +256,9 @@ class ModelTrainer:
         
         model = RandomForestClassifier(
             n_estimators=480,
-            max_depth=11,
+            max_depth=9,
             min_samples_split=5,
-            min_samples_leaf=2,
+            min_samples_leaf=3,
             max_features=0.80,
             bootstrap=True,
             class_weight=self.class_weights,
@@ -280,8 +280,8 @@ class ModelTrainer:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = GradientBoostingClassifier(
-            n_estimators=300,
-            learning_rate=0.058,
+            n_estimators=320,
+            learning_rate=0.052,
             max_depth=5,
             min_samples_split=10,
             min_samples_leaf=5,
@@ -309,8 +309,8 @@ class ModelTrainer:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = ExtraTreesClassifier(
-            n_estimators=400,
-            max_depth=11,
+            n_estimators=420,
+            max_depth=9,
             min_samples_split=4,
             min_samples_leaf=2,
             max_features=0.84,
@@ -334,12 +334,12 @@ class ModelTrainer:
         X_val_clean, y_val_clean = self.safe_data_conversion(X_val, y_val)
         
         model = MLPClassifier(
-            hidden_layer_sizes=(130, 65),
+            hidden_layer_sizes=(140, 70),
             activation='relu',
             solver='adam',
             alpha=0.0006,
             learning_rate='adaptive',
-            learning_rate_init=0.0009,
+            learning_rate_init=0.0006,
             max_iter=2000,
             random_state=42,
             early_stopping=True,
@@ -470,13 +470,13 @@ class ModelTrainer:
                 accuracy = accuracy_score(y_val_clean, y_pred)
                 f1 = f1_score(y_val_clean, y_pred, average='macro')
                 
-                # 분포 적합성 평가 (클래스 0 과소예측 페널티 증가)
+                # 분포 적합성 평가
                 pred_dist = np.bincount(y_pred, minlength=3) / len(y_pred)
                 target_dist = np.array([0.463, 0.269, 0.268])
                 distribution_penalty = np.sum(np.abs(pred_dist - target_dist))
                 
                 # 성능 점수 (분포 적합성 가중치 증가)
-                combined_score = 0.60 * accuracy + 0.20 * f1 - 0.20 * distribution_penalty
+                combined_score = 0.55 * accuracy + 0.20 * f1 - 0.25 * distribution_penalty
                 model_scores[name] = combined_score
                 
             except Exception as e:

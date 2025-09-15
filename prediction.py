@@ -280,15 +280,15 @@ class PredictionSystem:
             
             return weights
         
-        # 수정된 가중치 (분포 보정 모델 강화)
+        # 수정된 가중치 (분포 보정 최적화)
         default_weights = {
-            'lightgbm': 0.28,
-            'xgboost': 0.26,
-            'catboost': 0.23,
-            'random_forest': 0.12,
-            'stacking': 0.07,
-            'gradient_boosting': 0.03,
-            'extra_trees': 0.01
+            'lightgbm': 0.24,
+            'xgboost': 0.22,
+            'catboost': 0.20,
+            'neural_network': 0.18,
+            'stacking': 0.12,
+            'random_forest': 0.03,
+            'gradient_boosting': 0.01
         }
         
         available_models = list(predictions.keys())
@@ -347,27 +347,27 @@ class PredictionSystem:
             # 분포 차이 계산
             distribution_diff = target_distribution - current_distribution
             
-            # 클래스별 조정 계수 (더 강력한 보정)
+            # 클래스별 조정 계수 (더 적극적인 보정)
             adjustment_factors = np.ones(3)
             
-            # 클래스 0 대폭 증가 보정
-            if distribution_diff[0] > 0.03:
-                adjustment_factors[0] = 1.18  # 1.12 -> 1.18
-            elif distribution_diff[0] > 0.01:
+            # 클래스 0 부족 보정 (7.3% 부족 해결)
+            if distribution_diff[0] > 0.05:
+                adjustment_factors[0] = 1.25
+            elif distribution_diff[0] > 0.02:
+                adjustment_factors[0] = 1.18
+            else:
                 adjustment_factors[0] = 1.12
-            else:
-                adjustment_factors[0] = 1.05
             
-            # 클래스 2 대폭 감소 보정
-            if distribution_diff[2] < -0.06:
-                adjustment_factors[2] = 0.85  # 0.92 -> 0.85
-            elif distribution_diff[2] < -0.03:
-                adjustment_factors[2] = 0.90
+            # 클래스 2 과다 보정 (9% 과다 해결)
+            if distribution_diff[2] < -0.07:
+                adjustment_factors[2] = 0.85
+            elif distribution_diff[2] < -0.04:
+                adjustment_factors[2] = 0.88
             else:
-                adjustment_factors[2] = 0.95
+                adjustment_factors[2] = 0.92
             
             # 클래스 1 미세 조정
-            adjustment_factors[1] = 1.03
+            adjustment_factors[1] = 1.02
             
             # 조정 적용
             adjusted_proba = pred_proba * adjustment_factors[np.newaxis, :]
@@ -385,7 +385,7 @@ class PredictionSystem:
         """확률 보정"""
         try:
             # Temperature scaling
-            temperature = 1.01
+            temperature = 0.98
             
             # 로그 확률로 변환
             log_proba = np.log(np.clip(pred_proba, 1e-7, 1-1e-7))
@@ -400,6 +400,37 @@ class PredictionSystem:
             
         except Exception:
             return pred_proba
+    
+    def apply_post_processing(self, predictions, corrected_proba):
+        """예측 후처리"""
+        total_preds = len(predictions)
+        
+        # 현재 분포 확인
+        pred_counts = np.bincount(predictions, minlength=3)
+        
+        # 클래스 0 최소 비율 보장 (목표: 46.3%)
+        if pred_counts[0] < total_preds * 0.43:
+            class_0_proba = corrected_proba[:, 0]
+            # 상위 확률의 샘플들을 클래스 0으로 변경
+            target_count = int(total_preds * 0.44)
+            top_indices = np.argsort(class_0_proba)[-target_count:]
+            predictions[top_indices] = 0
+        
+        # 클래스 1 최소 비율 보장 (목표: 26.9%)
+        current_pred_counts = np.bincount(predictions, minlength=3)
+        if current_pred_counts[1] < total_preds * 0.24:
+            class_1_proba = corrected_proba[:, 1]
+            target_count = int(total_preds * 0.26)
+            # 클래스 0이 아닌 것 중에서 클래스 1 확률이 높은 것 선택
+            non_class_0_mask = predictions != 0
+            if non_class_0_mask.sum() > 0:
+                non_class_0_indices = np.where(non_class_0_mask)[0]
+                class_1_scores = class_1_proba[non_class_0_indices]
+                top_class_1_local_indices = np.argsort(class_1_scores)[-min(target_count, len(class_1_scores)):]
+                top_class_1_indices = non_class_0_indices[top_class_1_local_indices]
+                predictions[top_class_1_indices] = 1
+        
+        return predictions
     
     def generate_predictions(self, X_test, test_ids):
         """예측 생성"""
@@ -424,29 +455,8 @@ class PredictionSystem:
         # 최종 예측
         predictions = np.argmax(corrected_proba, axis=1)
         
-        # 예측 후처리 (더 강력한 분포 조정)
-        pred_counts = np.bincount(predictions, minlength=3)
-        total_preds = len(predictions)
-        
-        # 클래스 0 최소 비율 보장 (40%)
-        target_class_0_ratio = 0.40
-        if pred_counts[0] < total_preds * target_class_0_ratio:
-            class_0_proba = corrected_proba[:, 0]
-            top_indices = np.argsort(class_0_proba)[-int(total_preds * target_class_0_ratio):]
-            predictions[top_indices] = 0
-        
-        # 클래스 1 최소 비율 보장 (22%)
-        target_class_1_ratio = 0.22
-        updated_pred_counts = np.bincount(predictions, minlength=3)
-        if updated_pred_counts[1] < total_preds * target_class_1_ratio:
-            class_1_proba = corrected_proba[:, 1]
-            # 클래스 0이 아닌 것 중에서 선택
-            non_class_0_mask = predictions != 0
-            eligible_indices = np.where(non_class_0_mask)[0]
-            if len(eligible_indices) > 0:
-                class_1_scores = class_1_proba[eligible_indices]
-                top_class_1_indices = eligible_indices[np.argsort(class_1_scores)[-int(total_preds * target_class_1_ratio):]]
-                predictions[top_class_1_indices] = 1
+        # 예측 후처리
+        predictions = self.apply_post_processing(predictions, corrected_proba)
         
         # 제출 파일 생성
         submission_df = pd.DataFrame({
@@ -492,31 +502,28 @@ class PredictionSystem:
             y_train = train_processed['support_needs']
             X_test_simple = test_processed[feature_cols].fillna(0)
             
-            # 클래스 가중치 (대폭 조정)
-            if self.class_weights:
-                class_weights = self.class_weights
-            else:
-                class_counts = np.bincount(y_train)
-                total_samples = len(y_train)
-                class_weights = {}
-                
-                for i, count in enumerate(class_counts):
-                    if count > 0:
-                        class_weights[i] = total_samples / (len(class_counts) * count)
-                    else:
-                        class_weights[i] = 1.0
-                
-                # 분포 보정 가중치 (대폭 조정)
-                class_weights[0] = class_weights[0] * 1.4  # 1.3 -> 1.4
-                class_weights[1] = class_weights[1] * 1.1
-                class_weights[2] = class_weights[2] * 0.75  # 0.8 -> 0.75
+            # 클래스 가중치 (분포 보정 반영)
+            class_counts = np.bincount(y_train)
+            total_samples = len(y_train)
+            class_weights = {}
+            
+            for i, count in enumerate(class_counts):
+                if count > 0:
+                    class_weights[i] = total_samples / (len(class_counts) * count)
+                else:
+                    class_weights[i] = 1.0
+            
+            # 분포 보정 가중치 (클래스 0 증가, 클래스 2 감소)
+            class_weights[0] = class_weights[0] * 1.38
+            class_weights[1] = class_weights[1] * 1.05
+            class_weights[2] = class_weights[2] * 0.76
             
             # 모델 학습
             model = RandomForestClassifier(
-                n_estimators=600,
-                max_depth=13,
-                min_samples_split=5,
-                min_samples_leaf=2,
+                n_estimators=520,
+                max_depth=11,
+                min_samples_split=7,
+                min_samples_leaf=4,
                 class_weight=class_weights,
                 random_state=42,
                 n_jobs=-1
@@ -531,15 +538,8 @@ class PredictionSystem:
             corrected_proba = self.apply_distribution_correction(pred_proba)
             predictions = np.argmax(corrected_proba, axis=1)
             
-            # 후처리 (더 강력한 조정)
-            pred_counts = np.bincount(predictions, minlength=3)
-            total_preds = len(predictions)
-            
-            # 클래스 0 45% 보장
-            if pred_counts[0] < total_preds * 0.45:
-                class_0_proba = corrected_proba[:, 0]
-                top_indices = np.argsort(class_0_proba)[-int(total_preds * 0.45):]
-                predictions[top_indices] = 0
+            # 후처리 적용
+            predictions = self.apply_post_processing(predictions, corrected_proba)
             
             # 제출 파일
             submission_df = pd.DataFrame({
