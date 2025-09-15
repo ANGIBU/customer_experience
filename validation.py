@@ -90,9 +90,9 @@ class ValidationSystem:
                 class_weights[i] = 1.0
         
         # 정밀 분포 보정
-        class_weights[0] *= 1.18  # 클래스 0 증가
-        class_weights[1] *= 1.04  # 클래스 1 소폭 증가
-        class_weights[2] *= 0.88  # 클래스 2 감소
+        class_weights[0] *= 1.14  # 클래스 0 증가
+        class_weights[1] *= 1.03  # 클래스 1 소폭 증가
+        class_weights[2] *= 0.92  # 클래스 2 감소
         
         model = RandomForestClassifier(
             n_estimators=300,

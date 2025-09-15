@@ -428,15 +428,15 @@ class PredictionSystem:
         pred_counts = np.bincount(predictions, minlength=3)
         total_preds = len(predictions)
         
-        # 클래스 0 최소 비율 보장 (42% -> 44%)
-        target_class_0_ratio = 0.44
+        # 클래스 0 최소 비율 보장 (40%)
+        target_class_0_ratio = 0.40
         if pred_counts[0] < total_preds * target_class_0_ratio:
             class_0_proba = corrected_proba[:, 0]
             top_indices = np.argsort(class_0_proba)[-int(total_preds * target_class_0_ratio):]
             predictions[top_indices] = 0
         
-        # 클래스 1 최소 비율 보장 (26%)
-        target_class_1_ratio = 0.26
+        # 클래스 1 최소 비율 보장 (22%)
+        target_class_1_ratio = 0.22
         updated_pred_counts = np.bincount(predictions, minlength=3)
         if updated_pred_counts[1] < total_preds * target_class_1_ratio:
             class_1_proba = corrected_proba[:, 1]

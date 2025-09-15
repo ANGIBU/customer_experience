@@ -196,9 +196,9 @@ class ModelTrainer:
         model = xgb.train(
             params,
             train_data,
-            num_boost_round=2200,
+            num_boost_round=2000,
             evals=[(val_data, 'eval')],
-            early_stopping_rounds=130,
+            early_stopping_rounds=120,
             verbose_eval=0
         )
         

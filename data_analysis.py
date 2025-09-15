@@ -68,8 +68,8 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 시간적 분할점 계산 (85% 퍼센타일로 완화)
-            overlap_threshold = int(np.percentile(train_id_nums, 85))
+            # 시간적 분할점 계산 (90% 퍼센타일로 완화)
+            overlap_threshold = int(np.percentile(train_id_nums, 90))
             
             self.temporal_threshold = overlap_threshold
             
