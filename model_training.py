@@ -41,9 +41,9 @@ class ModelTrainer:
                 weights[i] = 1.0
         
         # 정밀 분포 보정 (기준점 돌파용)
-        weights[0] *= 1.18  # 클래스 0 증가
-        weights[1] *= 1.04  # 클래스 1 소폭 증가  
-        weights[2] *= 0.89  # 클래스 2 감소
+        weights[0] *= 1.13  # 클래스 0 증가
+        weights[1] *= 1.08  # 클래스 1 증가
+        weights[2] *= 0.93  # 클래스 2 감소
         
         self.class_weights = weights
         return weights
@@ -118,16 +118,16 @@ class ModelTrainer:
             'num_class': 3,
             'metric': 'multi_logloss',
             'boosting_type': 'gbdt',
-            'num_leaves': 38,
-            'learning_rate': 0.022,
-            'feature_fraction': 0.83,
-            'bagging_fraction': 0.88,
-            'bagging_freq': 3,
-            'min_child_weight': 8,
-            'min_split_gain': 0.10,
-            'reg_alpha': 0.06,
-            'reg_lambda': 0.06,
-            'max_depth': 7,
+            'num_leaves': 32,
+            'learning_rate': 0.027,
+            'feature_fraction': 0.80,
+            'bagging_fraction': 0.86,
+            'bagging_freq': 5,
+            'min_child_weight': 12,
+            'min_split_gain': 0.15,
+            'reg_alpha': 0.10,
+            'reg_lambda': 0.10,
+            'max_depth': 6,
             'verbose': -1,
             'random_state': 42,
             'force_col_wise': True,
@@ -167,14 +167,14 @@ class ModelTrainer:
             'objective': 'multi:softprob',
             'num_class': 3,
             'eval_metric': 'mlogloss',
-            'max_depth': 6,
-            'learning_rate': 0.022,
-            'subsample': 0.89,
-            'colsample_bytree': 0.83,
-            'reg_alpha': 0.06,
-            'reg_lambda': 0.06,
-            'min_child_weight': 8,
-            'gamma': 0.10,
+            'max_depth': 5,
+            'learning_rate': 0.027,
+            'subsample': 0.86,
+            'colsample_bytree': 0.80,
+            'reg_alpha': 0.10,
+            'reg_lambda': 0.10,
+            'min_child_weight': 12,
+            'gamma': 0.15,
             'random_state': 42,
             'verbosity': 0,
             'tree_method': 'hist',

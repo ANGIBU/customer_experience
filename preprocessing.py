@@ -44,17 +44,17 @@ class DataPreprocessor:
         if 'temporal_id' not in train_df.columns:
             return train_df
         
-        # 완화된 필터링 (최소 보존율 97%)
+        # 완화된 필터링 (최소 보존율 94%)
         safe_mask = train_df['temporal_id'] <= threshold
         safe_data = train_df[safe_mask].copy()
         
         removal_ratio = 1 - (len(safe_data) / len(train_df))
-        if removal_ratio > 0.03:
-            percentile_98 = np.percentile(train_df['temporal_id'], 98)
-            safe_mask = train_df['temporal_id'] <= percentile_98
+        if removal_ratio > 0.06:
+            percentile_95 = np.percentile(train_df['temporal_id'], 95)
+            safe_mask = train_df['temporal_id'] <= percentile_95
             safe_data = train_df[safe_mask].copy()
         
-        return safe_data if len(safe_data) > 8500 else train_df
+        return safe_data if len(safe_data) > 9500 else train_df
     
     def handle_missing_values(self, train_df, test_df):
         """결측치 처리"""
@@ -195,7 +195,7 @@ class DataPreprocessor:
         
         return train_clean
     
-    def select_features_conservative(self, train_df, max_features=75):
+    def select_features_conservative(self, train_df, max_features=60):
         """피처 선택"""
         if 'support_needs' not in train_df.columns:
             feature_cols = [col for col in train_df.columns if col not in ['ID']]
@@ -386,7 +386,7 @@ class DataPreprocessor:
         
         # 피처 선택
         if 'support_needs' in train_df.columns:
-            selected_features = self.select_features_conservative(train_df, max_features=75)
+            selected_features = self.select_features_conservative(train_df, max_features=60)
             
             keep_cols_train = ['ID', 'support_needs'] + selected_features
             keep_cols_test = ['ID'] + [f for f in selected_features if f in test_df.columns]

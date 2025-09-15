@@ -63,7 +63,7 @@ class FeatureEngineer:
             correlation = safe_data[['after_interaction', 'support_needs']].corr().iloc[0, 1]
             
             # 완화된 기준 적용
-            if abs(correlation) > 0.35:
+            if abs(correlation) > 0.18:
                 return False, f"상관관계 위험: {correlation:.3f}"
             
             # 클래스별 분리도 검증
@@ -82,7 +82,7 @@ class FeatureEngineer:
         
         # 전체 데이터에서의 기본 검증
         correlation = train_df[['after_interaction', 'support_needs']].corr().iloc[0, 1]
-        if abs(correlation) > 0.28:
+        if abs(correlation) > 0.15:
             return False, f"전체 상관관계 위험: {correlation:.3f}"
         
         return True, f"기본 안전: {correlation:.3f}"
@@ -109,19 +109,6 @@ class FeatureEngineer:
                 # 제곱근 변환
                 train_processed['after_interaction_sqrt'] = np.sqrt(np.abs(train_values))
                 test_processed['after_interaction_sqrt'] = np.sqrt(np.abs(test_values))
-                
-                # 분위수 변환
-                train_processed['after_interaction_rank'] = train_values.rank(pct=True)
-                test_processed['after_interaction_rank'] = test_values.rank(pct=True)
-                
-                # 시간 지연 변환
-                if 'ID' in train_processed.columns:
-                    train_processed['after_interaction_lag1'] = train_processed.groupby('ID')['after_interaction'].shift(1)
-                    train_processed['after_interaction_diff1'] = train_processed.groupby('ID')['after_interaction'].diff(1)
-                    
-                    if 'ID' in test_processed.columns:
-                        test_processed['after_interaction_lag1'] = test_processed.groupby('ID')['after_interaction'].shift(1)
-                        test_processed['after_interaction_diff1'] = test_processed.groupby('ID')['after_interaction'].diff(1)
                 
                 # 이상치 보정된 원본 유지
                 q01 = train_values.quantile(0.001)
@@ -165,20 +152,10 @@ class FeatureEngineer:
                 # 시간적 그룹핑
                 df_new['temporal_quartile'] = pd.qcut(id_numbers, q=4, labels=False, duplicates='drop')
                 df_new['temporal_decile'] = pd.qcut(id_numbers, q=10, labels=False, duplicates='drop')
-                df_new['temporal_quintile'] = pd.qcut(id_numbers, q=5, labels=False, duplicates='drop')
-                
-                # 시간적 주기성
-                df_new['temporal_cycle'] = [x % 100 for x in id_numbers]
-                df_new['temporal_cycle_sin'] = np.sin(2 * np.pi * np.array(id_numbers) / 1000)
-                df_new['temporal_cycle_cos'] = np.cos(2 * np.pi * np.array(id_numbers) / 1000)
             else:
                 df_new['temporal_position'] = [0.5] * len(id_numbers)
                 df_new['temporal_quartile'] = [1] * len(id_numbers)
                 df_new['temporal_decile'] = [5] * len(id_numbers)
-                df_new['temporal_quintile'] = [2] * len(id_numbers)
-                df_new['temporal_cycle'] = [0] * len(id_numbers)
-                df_new['temporal_cycle_sin'] = [0] * len(id_numbers)
-                df_new['temporal_cycle_cos'] = [1] * len(id_numbers)
         
         return df_new
     
@@ -249,6 +226,7 @@ class FeatureEngineer:
                                 np.where(age_safe > 60, 1.1, 1.0))
             
             # 나이 기반 세분화
+            age_safe = np.clip(df_new['age'].fillna(35), 18, 100)
             df_new['age_squared'] = age_safe ** 2
             df_new['age_log'] = np.log1p(age_safe)
         
@@ -293,9 +271,7 @@ class FeatureEngineer:
             ('age', 'tenure'),
             ('frequent', 'payment_interval'),
             ('tenure', 'contract_length'),
-            ('age', 'frequent'),
-            ('age', 'contract_length'),
-            ('frequent', 'contract_length')
+            ('age', 'frequent')
         ]
         
         for feat1, feat2 in key_interactions:
