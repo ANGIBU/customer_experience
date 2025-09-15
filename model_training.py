@@ -41,10 +41,10 @@ class ModelTrainer:
             else:
                 weights[i] = 1.0
         
-        # 분포 보정을 위한 클래스별 가중치 조정
-        weights[0] *= 1.25  # 클래스 0 과소예측 보정
-        weights[1] *= 1.08  # 클래스 1 유지
-        weights[2] *= 0.85  # 클래스 2 과다예측 보정
+        # 분포 보정을 위한 클래스별 가중치 조정 (더 정밀하게)
+        weights[0] *= 1.35  # 클래스 0 과소예측 보정 강화
+        weights[1] *= 1.05  # 클래스 1 유지
+        weights[2] *= 0.80  # 클래스 2 과다예측 보정 강화
         
         self.class_weights = weights
         return weights

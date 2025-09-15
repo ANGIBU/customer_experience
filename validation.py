@@ -89,10 +89,10 @@ class ValidationSystem:
             else:
                 class_weights[i] = 1.0
         
-        # 분포 보정
-        class_weights[0] *= 1.22  # 클래스 0 과소예측 보정
-        class_weights[1] *= 1.08  # 클래스 1 유지
-        class_weights[2] *= 0.87  # 클래스 2 과다예측 보정
+        # 분포 보정 (더 정밀하게)
+        class_weights[0] *= 1.32  # 클래스 0 과소예측 보정 강화
+        class_weights[1] *= 1.05  # 클래스 1 유지
+        class_weights[2] *= 0.82  # 클래스 2 과다예측 보정 강화
         
         model = RandomForestClassifier(
             n_estimators=280,
