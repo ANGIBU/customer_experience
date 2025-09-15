@@ -68,8 +68,8 @@ class DataAnalyzer:
             train_range = [min(train_id_nums), max(train_id_nums)]
             test_range = [min(test_id_nums), max(test_id_nums)]
             
-            # 보수적 시간적 분할점 계산 (85% 퍼센타일)
-            overlap_threshold = int(np.percentile(train_id_nums, 85))
+            # 시간적 분할점 계산 (90% 퍼센타일로 완화)
+            overlap_threshold = int(np.percentile(train_id_nums, 90))
             
             self.temporal_threshold = overlap_threshold
             
@@ -125,7 +125,7 @@ class DataAnalyzer:
                 
                 f_stat, p_value = stats.f_oneway(*groups) if len(groups) >= 2 else (0, 1)
                 
-                # 보수적 누수 기준 (0.15, 0.25, 0.01)
+                # 완화된 누수 기준 (0.25, 0.5, 0.001)
                 leakage_features['after_interaction'] = {
                     'correlation': correlation,
                     'mutual_info': mi_score,
@@ -133,7 +133,7 @@ class DataAnalyzer:
                     'f_statistic': f_stat,
                     'p_value': p_value,
                     'class_stats': class_stats,
-                    'is_leakage': abs(correlation) > 0.15 or mi_score > 0.25 or p_value < 0.01
+                    'is_leakage': abs(correlation) > 0.25 or mi_score > 0.5 or p_value < 0.001
                 }
         
         return leakage_features
@@ -178,7 +178,7 @@ class DataAnalyzer:
                         'psi_score': psi_score,
                         'train_stats': train_stats,
                         'test_stats': test_stats,
-                        'is_stable': ks_stat < 0.06 and psi_score < 0.12
+                        'is_stable': ks_stat < 0.08 and psi_score < 0.15
                     }
         
         return stability_results
@@ -246,7 +246,7 @@ class DataAnalyzer:
                         'chi2_statistic': chi2_stat,
                         'chi2_p_value': chi2_p,
                         'common_categories': list(common_cats),
-                        'is_stable': chi2_p > 0.03
+                        'is_stable': chi2_p > 0.05
                     }
         
         return categorical_analysis

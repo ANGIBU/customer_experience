@@ -44,29 +44,34 @@ class DataPreprocessor:
         if 'temporal_id' not in train_df.columns:
             return train_df
         
-        # 보수적 필터링 (최소 보존율 85%)
+        # 완화된 필터링 (최소 보존율 92%)
         safe_mask = train_df['temporal_id'] <= threshold
         safe_data = train_df[safe_mask].copy()
         
         removal_ratio = 1 - (len(safe_data) / len(train_df))
-        if removal_ratio > 0.15:  # 15% 이상 제거되면 더 보수적 기준 적용
-            percentile_85 = np.percentile(train_df['temporal_id'], 85)
-            safe_mask = train_df['temporal_id'] <= percentile_85
+        if removal_ratio > 0.08:  # 8% 이상 제거되면 더 관대한 기준 적용
+            percentile_95 = np.percentile(train_df['temporal_id'], 95)
+            safe_mask = train_df['temporal_id'] <= percentile_95
             safe_data = train_df[safe_mask].copy()
         
-        return safe_data if len(safe_data) > 10000 else train_df
+        return safe_data if len(safe_data) > 8000 else train_df
     
     def handle_missing_values(self, train_df, test_df):
         """결측치 처리"""
         train_clean = self.safe_data_conversion(train_df)
         test_clean = self.safe_data_conversion(test_df)
         
-        # 수치형 변수 - 보수적 대체
+        # 수치형 변수 - 적응적 대체
         numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
         
         # 시간 관련 피처가 있다면 추가
         if 'temporal_position' in train_clean.columns:
             numeric_cols.append('temporal_position')
+        
+        # after_interaction 관련 피처 처리
+        for col in train_clean.columns:
+            if 'after_interaction' in col:
+                numeric_cols.append(col)
         
         common_numeric = [col for col in numeric_cols if col in train_clean.columns and col in test_clean.columns]
         
@@ -77,15 +82,15 @@ class DataPreprocessor:
                 missing_ratio = train_clean[col].isnull().mean()
                 missing_ratios[col] = missing_ratio
             
-            # 보수적 대체 전략
-            high_missing_cols = [col for col, ratio in missing_ratios.items() if ratio > 0.20]
-            medium_missing_cols = [col for col, ratio in missing_ratios.items() if 0.05 < ratio <= 0.20]
+            # 적응적 대체 전략
+            high_missing_cols = [col for col, ratio in missing_ratios.items() if ratio > 0.25]
+            medium_missing_cols = [col for col, ratio in missing_ratios.items() if 0.05 < ratio <= 0.25]
             low_missing_cols = [col for col, ratio in missing_ratios.items() if ratio <= 0.05]
             
             # KNN Imputer (높은 결측치)
             if high_missing_cols:
                 if 'knn' not in self.imputers:
-                    self.imputers['knn'] = KNNImputer(n_neighbors=3, weights='distance')
+                    self.imputers['knn'] = KNNImputer(n_neighbors=5, weights='distance')
                     train_imputed_knn = self.imputers['knn'].fit_transform(train_clean[high_missing_cols])
                 else:
                     train_imputed_knn = self.imputers['knn'].transform(train_clean[high_missing_cols])
@@ -95,13 +100,22 @@ class DataPreprocessor:
                 train_clean[high_missing_cols] = train_imputed_knn
                 test_clean[high_missing_cols] = test_imputed_knn
             
-            # 중앙값 대체 (중간 결측치)
-            for col in medium_missing_cols:
-                if col not in self.imputers:
-                    self.imputers[col] = train_clean[col].median()
+            # Iterative Imputer (중간 결측치)
+            if medium_missing_cols:
+                if 'iterative' not in self.imputers:
+                    self.imputers['iterative'] = IterativeImputer(
+                        max_iter=8, 
+                        random_state=42,
+                        initial_strategy='median'
+                    )
+                    train_imputed_iter = self.imputers['iterative'].fit_transform(train_clean[medium_missing_cols])
+                else:
+                    train_imputed_iter = self.imputers['iterative'].transform(train_clean[medium_missing_cols])
                 
-                train_clean[col].fillna(self.imputers[col], inplace=True)
-                test_clean[col].fillna(self.imputers[col], inplace=True)
+                test_imputed_iter = self.imputers['iterative'].transform(test_clean[medium_missing_cols])
+                
+                train_clean[medium_missing_cols] = train_imputed_iter
+                test_clean[medium_missing_cols] = test_imputed_iter
             
             # 중앙값 대체 (낮은 결측치)
             for col in low_missing_cols:
@@ -111,22 +125,53 @@ class DataPreprocessor:
                 train_clean[col].fillna(self.imputers[col], inplace=True)
                 test_clean[col].fillna(self.imputers[col], inplace=True)
         
-        # 범주형 변수 - 최빈값 대체
+        # 범주형 변수 - 타겟 기반 대체
         categorical_cols = ['gender', 'subscription_type']
         
         for col in categorical_cols:
             if col in train_clean.columns and col in test_clean.columns:
                 if col not in self.imputers:
-                    mode_val = train_clean[col].mode()
-                    self.imputers[col] = mode_val.iloc[0] if len(mode_val) > 0 else 'Unknown'
+                    # 타겟별 최빈값 계산
+                    if 'support_needs' in train_clean.columns:
+                        target_modes = {}
+                        for target in [0, 1, 2]:
+                            subset = train_clean[train_clean['support_needs'] == target]
+                            if len(subset) > 0 and not subset[col].mode().empty:
+                                target_modes[target] = subset[col].mode().iloc[0]
+                        
+                        # 전체 최빈값을 기본값으로
+                        overall_mode = train_clean[col].mode()
+                        default_mode = overall_mode.iloc[0] if len(overall_mode) > 0 else 'Unknown'
+                        
+                        self.imputers[col] = {'target_modes': target_modes, 'default': default_mode}
+                    else:
+                        mode_val = train_clean[col].mode()
+                        self.imputers[col] = mode_val.iloc[0] if len(mode_val) > 0 else 'Unknown'
                 
-                train_clean[col].fillna(self.imputers[col], inplace=True)
-                test_clean[col].fillna(self.imputers[col], inplace=True)
+                # 적용
+                if isinstance(self.imputers[col], dict):
+                    # 타겟 기반 대체
+                    for idx in train_clean[train_clean[col].isnull()].index:
+                        if 'support_needs' in train_clean.columns:
+                            target = train_clean.loc[idx, 'support_needs']
+                            if target in self.imputers[col]['target_modes']:
+                                train_clean.loc[idx, col] = self.imputers[col]['target_modes'][target]
+                            else:
+                                train_clean.loc[idx, col] = self.imputers[col]['default']
+                        else:
+                            train_clean.loc[idx, col] = self.imputers[col]['default']
+                    
+                    # 테스트 데이터는 기본값 사용
+                    test_clean[col].fillna(self.imputers[col]['default'], inplace=True)
+                else:
+                    # 단순 대체
+                    train_clean[col].fillna(self.imputers[col], inplace=True)
+                    test_clean[col].fillna(self.imputers[col], inplace=True)
         
         return train_clean, test_clean
     
-    def remove_outliers_conservative(self, train_df):
-        """보수적 이상치 제거"""
+    def remove_outliers_robust(self, train_df):
+        """이상치 제거"""
         train_clean = self.safe_data_conversion(train_df)
         
         numeric_cols = ['age', 'tenure', 'frequent', 'payment_interval', 'contract_length']
@@ -143,16 +188,16 @@ class DataPreprocessor:
             values = train_clean[col].dropna()
             
             if len(values) > 100:
-                # 보수적 이상치 제거 (1% ~ 99%)
-                lower_bound = values.quantile(0.01)
-                upper_bound = values.quantile(0.99)
+                # 완화된 이상치 제거 (0.5% ~ 99.5%)
+                lower_bound = values.quantile(0.005)
+                upper_bound = values.quantile(0.995)
                 
                 train_clean[col] = np.clip(train_clean[col], lower_bound, upper_bound)
         
         return train_clean
     
-    def select_features_conservative(self, train_df, max_features=55):
-        """보수적 피처 선택"""
+    def select_features_optimized(self, train_df, max_features=70):
+        """피처 선택"""
         if 'support_needs' not in train_df.columns:
             feature_cols = [col for col in train_df.columns if col not in ['ID']]
             return feature_cols[:min(max_features, len(feature_cols))]
@@ -166,8 +211,8 @@ class DataPreprocessor:
         X = train_df[feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
         y = np.clip(train_df['support_needs'], 0, 2)
         
-        # 1단계: 분산 필터링 (보수적 기준)
-        variance_selector = VarianceThreshold(threshold=0.005)
+        # 1단계: 분산 필터링 (완화된 기준)
+        variance_selector = VarianceThreshold(threshold=0.0001)
         X_variance = variance_selector.fit_transform(X)
         variance_features = [feature_cols[i] for i, selected in enumerate(variance_selector.get_support()) if selected]
         
@@ -175,16 +220,16 @@ class DataPreprocessor:
             self.selected_features = variance_features
             return variance_features
         
-        # 2단계: 상관관계 기반 중복 제거 (보수적 기준)
+        # 2단계: 상관관계 기반 중복 제거 (완화된 기준)
         X_var_df = pd.DataFrame(X_variance, columns=variance_features)
         correlation_matrix = X_var_df.corr().abs()
         
-        # 높은 상관관계 (>0.90) 피처 제거
+        # 높은 상관관계 (>0.97) 피처 제거
         upper_tri = correlation_matrix.where(
             np.triu(np.ones(correlation_matrix.shape), k=1).astype(bool)
         )
         
-        high_corr_features = [column for column in upper_tri.columns if any(upper_tri[column] > 0.90)]
+        high_corr_features = [column for column in upper_tri.columns if any(upper_tri[column] > 0.97)]
         reduced_features = [f for f in variance_features if f not in high_corr_features]
         
         if len(reduced_features) <= max_features:
@@ -204,8 +249,8 @@ class DataPreprocessor:
         self.selected_features = selected_features
         return selected_features
     
-    def apply_scaling_conservative(self, train_df, test_df):
-        """보수적 스케일링"""
+    def apply_scaling(self, train_df, test_df):
+        """스케일링"""
         train_clean = self.safe_data_conversion(train_df)
         test_clean = self.safe_data_conversion(test_df)
         
@@ -217,9 +262,9 @@ class DataPreprocessor:
         if not common_numeric:
             return train_clean, test_clean
         
-        # RobustScaler만 사용 (이상치에 강함)
+        # 단일 스케일링 전략 (RobustScaler)
         if 'main' not in self.scalers:
-            self.scalers['main'] = RobustScaler(quantile_range=(10.0, 90.0))
+            self.scalers['main'] = RobustScaler()
             
             train_scaled = self.scalers['main'].fit_transform(train_clean[common_numeric])
         else:
@@ -232,8 +277,8 @@ class DataPreprocessor:
         
         return train_clean, test_clean
     
-    def validate_data_quality_strict(self, train_df, test_df):
-        """엄격한 데이터 품질 검증"""
+    def validate_data_quality(self, train_df, test_df):
+        """데이터 품질 검증"""
         issues = []
         
         # 훈련 데이터 수치형 컬럼
@@ -265,18 +310,6 @@ class DataPreprocessor:
             if invalid_count > 0:
                 issues.append(f"invalid_targets: {invalid_count}")
         
-        # 극값 확인
-        for col in train_numeric_cols:
-            if col not in ['ID', 'support_needs']:
-                train_vals = train_df[col].dropna()
-                if len(train_vals) > 0:
-                    # 극단적인 값 확인
-                    q99_9 = train_vals.quantile(0.999)
-                    q0_1 = train_vals.quantile(0.001)
-                    extreme_count = ((train_vals > q99_9 * 10) | (train_vals < q0_1 / 10)).sum()
-                    if extreme_count > len(train_vals) * 0.001:
-                        issues.append(f"{col}_extreme_values: {extreme_count}")
-        
         return len(issues) == 0, issues
     
     def process_data(self, train_df, test_df, temporal_info=None):
@@ -291,12 +324,12 @@ class DataPreprocessor:
         # 결측치 처리
         train_df, test_df = self.handle_missing_values(train_df, test_df)
         
-        # 보수적 이상치 제거
-        train_df = self.remove_outliers_conservative(train_df)
+        # 이상치 제거
+        train_df = self.remove_outliers_robust(train_df)
         
-        # 보수적 피처 선택
+        # 피처 선택
         if 'support_needs' in train_df.columns:
-            selected_features = self.select_features_conservative(train_df, max_features=50)
+            selected_features = self.select_features_optimized(train_df, max_features=65)
             
             keep_cols_train = ['ID', 'support_needs'] + selected_features
             keep_cols_test = ['ID'] + [f for f in selected_features if f in test_df.columns]
@@ -308,15 +341,15 @@ class DataPreprocessor:
             train_df = train_df[available_train_cols]
             test_df = test_df[available_test_cols]
         
-        # 보수적 스케일링
-        train_df, test_df = self.apply_scaling_conservative(train_df, test_df)
+        # 스케일링
+        train_df, test_df = self.apply_scaling(train_df, test_df)
         
-        # 엄격한 품질 검증
-        quality_ok, issues = self.validate_data_quality_strict(train_df, test_df)
+        # 품질 검증
+        quality_ok, issues = self.validate_data_quality(train_df, test_df)
         
         return train_df, test_df
     
-    def prepare_data_temporal_optimized(self, train_df, test_df, val_size=0.22, gap_size=0.02):
+    def prepare_data_temporal_optimized(self, train_df, test_df, val_size=0.18, gap_size=0.01):
         """시간 기반 데이터 준비"""
         if train_df is None or test_df is None:
             return None, None, None, None, None, None
@@ -356,17 +389,17 @@ class DataPreprocessor:
         X_test = test_df[common_features].fillna(0).replace([np.inf, -np.inf], 0)
         test_ids = test_df['ID'] if 'ID' in test_df.columns else pd.Series(range(len(test_df)))
         
-        # 시간 기반 분할 with 증가된 갭 (2%)
+        # 시간 기반 분할 with 축소된 갭 (1%)
         if 'temporal_id' in X.columns:
             temporal_ids = X['temporal_id'].values
             sorted_indices = np.argsort(temporal_ids)
             
             total_samples = len(sorted_indices)
-            gap_samples = int(total_samples * gap_size)  # 2%
+            gap_samples = int(total_samples * gap_size)  # 1%
             val_samples = int(total_samples * val_size)
             train_samples = total_samples - val_samples - gap_samples
             
-            if train_samples < 800 or val_samples < 400:
+            if train_samples < 600 or val_samples < 300:
                 # 데이터 부족시 계층화 분할
                 from sklearn.model_selection import train_test_split
                 X_train, X_val, y_train, y_val = train_test_split(
